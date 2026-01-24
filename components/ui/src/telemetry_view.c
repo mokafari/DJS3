@@ -45,7 +45,7 @@ void telemetry_view_init(uint32_t width, uint32_t height) {
     
     // BPM label (left side, huge)
     bpm_label = lv_label_create(telemetry_container);
-    lv_obj_set_style_text_font(bpm_label, &lv_font_montserrat_48, 0); // Large font
+    lv_obj_set_style_text_font(bpm_label, &lv_font_montserrat_14, 0); // Use available font
     lv_obj_add_style(bpm_label, style_phosphor, 0);
     lv_label_set_text(bpm_label, "124.0");
     lv_obj_set_pos(bpm_label, 20, view_height / 2 - 24);
@@ -53,7 +53,7 @@ void telemetry_view_init(uint32_t width, uint32_t height) {
     
     // Pitch label (right side, huge)
     pitch_label = lv_label_create(telemetry_container);
-    lv_obj_set_style_text_font(pitch_label, &lv_font_montserrat_48, 0);
+    lv_obj_set_style_text_font(pitch_label, &lv_font_montserrat_14, 0); // Use available font
     lv_obj_add_style(pitch_label, style_phosphor, 0);
     lv_label_set_text(pitch_label, "+0.80%");
     lv_obj_set_pos(pitch_label, view_width - 200, view_height / 2 - 24);
@@ -94,6 +94,10 @@ void telemetry_view_init(uint32_t width, uint32_t height) {
     lv_obj_set_style_border_width(phase_bar, 0, 0);
     lv_obj_set_style_radius(phase_bar, 0, 0);
     lv_obj_clear_flag(phase_bar, LV_OBJ_FLAG_CLICKABLE);
+    
+    // Invalidate to trigger initial redraw
+    lv_obj_invalidate(telemetry_container);
+    ESP_LOGI(TAG, "Telemetry view created and invalidated");
 }
 
 void telemetry_view_update(float bpm, float pitch, float phase_error) {

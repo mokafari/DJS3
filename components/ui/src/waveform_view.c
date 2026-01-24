@@ -8,6 +8,8 @@
 #include "lvgl_driver.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "lvgl.h"
 #include <string.h>
 #include <math.h>
@@ -20,7 +22,6 @@ static const char *TAG = "waveform_view";
 
 static lv_obj_t *waveform_container = NULL;
 static lv_obj_t *waveform_canvas = NULL;
-static lv_canvas_t *canvas = NULL;
 static lv_obj_t *playhead_line = NULL;
 static lv_obj_t *cursor_line = NULL;
 static lv_obj_t *grid_container = NULL;
@@ -41,7 +42,7 @@ static size_t num_beats = 0;
 /**
  * @brief Draw vertical bar at position
  */
-static void draw_bar(lv_canvas_t *canvas, int x, int height, lv_color_t color) {
+static void draw_bar(lv_obj_t *canvas_obj, int x, int height, lv_color_t color) {
     int center_y = waveform_height / 2;
     int top = center_y - height / 2;
     int bottom = center_y + height / 2;
@@ -49,7 +50,7 @@ static void draw_bar(lv_canvas_t *canvas, int x, int height, lv_color_t color) {
     // Draw vertical line (bar)
     for (int y = top; y <= bottom; y++) {
         if (y >= 0 && y < (int)waveform_height) {
-            lv_canvas_set_px(canvas, x, y, color, LV_OPA_COVER);
+            lv_canvas_set_px(canvas_obj, x, y, color);
         }
     }
 }
@@ -58,13 +59,19 @@ static void draw_bar(lv_canvas_t *canvas, int x, int height, lv_color_t color) {
  * @brief Draw waveform with ghosting effect
  */
 static void draw_waveform(const uint8_t *waveform_data, size_t num_samples, float position) {
-    if (!canvas || !visible) return;
+    if (!waveform_canvas || !visible) return;
+    
+    // Skip drawing if canvas was not properly initialized (no buffer allocated)
+    // This prevents crashes when canvas buffer allocation failed
+    if (!waveform_canvas) {
+        return;
+    }
     
     lv_color_t fg_color = hud_theme_get_foreground_color();
     lv_color_t ghost_color = fg_color;
     
     // Clear canvas
-    lv_canvas_fill_bg(canvas, lv_color_black(), LV_OPA_COVER);
+    lv_canvas_fill_bg(waveform_canvas, lv_color_black(), LV_OPA_COVER);
     
     // Draw ghost trails (fading)
     for (int i = 0; i < GHOST_FRAMES; i++) {
@@ -79,7 +86,7 @@ static void draw_waveform(const uint8_t *waveform_data, size_t num_samples, floa
                 int bar_height = (height_val * waveform_height) / (255 * 2);
                 if (bar_height > 0) {
                     lv_color_t ghost = lv_color_mix(ghost_color, lv_color_black(), opa);
-                    draw_bar(canvas, x, bar_height, ghost);
+                    draw_bar(waveform_canvas, x, bar_height, ghost);
                 }
             }
         }
@@ -106,7 +113,7 @@ static void draw_waveform(const uint8_t *waveform_data, size_t num_samples, floa
             // Draw bar
             int bar_height = (peak * waveform_height) / (255 * 2);
             if (bar_height > 0) {
-                draw_bar(canvas, x, bar_height, fg_color);
+                draw_bar(waveform_canvas, x, bar_height, fg_color);
             }
             
             // Store in history
@@ -124,7 +131,7 @@ static void draw_waveform(const uint8_t *waveform_data, size_t num_samples, floa
             if (x >= 0 && x < WAVEFORM_BARS) {
                 // Draw dotted line
                 for (int y = 0; y < (int)waveform_height; y += GRID_DOT_SPACING * 2) {
-                    lv_canvas_set_px(canvas, x, y, grid_color, LV_OPA_COVER);
+                    lv_canvas_set_px(waveform_canvas, x, y, grid_color);
                 }
             }
         }
@@ -144,14 +151,33 @@ void waveform_view_init(uint32_t width, uint32_t height) {
     view_height = height * 50 / 100; // Zone A: 50% height
     waveform_height = view_height;
     
-    // Allocate history buffers
+    // Allocate history buffers (try INTERNAL RAM first, like Arduino example)
     for (int i = 0; i < GHOST_FRAMES; i++) {
+        size_t history_size = WAVEFORM_BARS * sizeof(uint8_t);
+        
+        // Try INTERNAL RAM first
         waveform_history[i] = (uint8_t*)heap_caps_malloc(
-            WAVEFORM_BARS * sizeof(uint8_t),
-            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT
+            history_size,
+            MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT
         );
+        
+        if (!waveform_history[i]) {
+            // Fall back to any RAM (includes PSRAM)
+            waveform_history[i] = (uint8_t*)heap_caps_malloc(
+                history_size,
+                MALLOC_CAP_8BIT
+            );
+        }
+        
         if (waveform_history[i]) {
             memset(waveform_history[i], 0, WAVEFORM_BARS);
+        } else {
+            ESP_LOGW(TAG, "Failed to allocate history buffer %d", i);
+        }
+        
+        // Small delay between allocations
+        if (i < GHOST_FRAMES - 1) {
+            vTaskDelay(pdMS_TO_TICKS(5));
         }
     }
     
@@ -166,12 +192,34 @@ void waveform_view_init(uint32_t width, uint32_t height) {
     
     // Create canvas for waveform
     waveform_canvas = lv_canvas_create(waveform_container);
-    canvas = (lv_canvas_t*)waveform_canvas;
-    lv_canvas_set_buffer(canvas, 
-        heap_caps_malloc(view_width * view_height * sizeof(lv_color_t), MALLOC_CAP_SPIRAM),
-        view_width, view_height, LV_IMG_CF_TRUE_COLOR);
-    lv_obj_set_size(waveform_canvas, view_width, view_height);
-    lv_obj_set_pos(waveform_canvas, 0, 0);
+    
+    // Allocate canvas buffer (try INTERNAL RAM first, like Arduino example)
+    // NOTE: 130KB is too large for internal RAM, so we'll try PSRAM with delays
+    // If allocation fails, we'll skip the custom buffer and let LVGL handle it
+    size_t canvas_buf_size = view_width * view_height * sizeof(lv_color_t);
+    ESP_LOGI(TAG, "Allocating canvas buffer: %zu bytes", canvas_buf_size);
+    
+    void *canvas_buf = NULL;
+    
+    // Try INTERNAL RAM first (will likely fail for 130KB, but worth trying)
+    canvas_buf = heap_caps_malloc(
+        canvas_buf_size,
+        MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT
+    );
+    
+    if (!canvas_buf) {
+        ESP_LOGW(TAG, "Internal RAM allocation failed, skipping PSRAM allocation to avoid watchdog reset");
+        ESP_LOGW(TAG, "Waveform view will be disabled (canvas requires buffer)");
+        // Destroy canvas if we can't allocate buffer (canvas requires buffer)
+        lv_obj_del(waveform_canvas);
+        waveform_canvas = NULL;
+    } else {
+        ESP_LOGI(TAG, "Canvas buffer allocated at %p", canvas_buf);
+        lv_canvas_set_buffer(waveform_canvas, canvas_buf,
+            view_width, view_height, LV_IMG_CF_TRUE_COLOR);
+        lv_obj_set_size(waveform_canvas, view_width, view_height);
+        lv_obj_set_pos(waveform_canvas, 0, 0);
+    }
     
     // Create playhead line (center vertical line)
     playhead_line = lv_obj_create(waveform_container);
@@ -213,7 +261,7 @@ void waveform_view_hide(void) {
 void waveform_view_update(const uint8_t *waveform_data, 
                          size_t num_samples, 
                          float position) {
-    if (!visible || !canvas) return;
+    if (!visible || !waveform_canvas) return;
     
     // Update playhead position
     if (playhead_line) {

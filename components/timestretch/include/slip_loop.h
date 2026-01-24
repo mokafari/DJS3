@@ -4,6 +4,12 @@
  * 
  * Implements Pioneer CDJ-style slip mode: loop a section while the track
  * continues playing in the background, then jump back to the correct position.
+ * 
+ * Features:
+ * - Regular mode: Standard looping behavior
+ * - DJFX mode: Pitch feedback - shortening loop increases pitch, lengthening decreases pitch
+ * - Reverse: Play loop backwards
+ * - Scatter: Random position jumps within buffer for glitch effects
  */
 
 #ifndef SLIP_LOOP_H
@@ -27,6 +33,14 @@ typedef enum {
 } slip_loop_mode_t;
 
 /**
+ * @brief Playback mode
+ */
+typedef enum {
+    SLIP_PLAYBACK_REGULAR = 0,   ///< Regular looping (no pitch change)
+    SLIP_PLAYBACK_DJFX            ///< DJFX mode (pitch feedback based on loop length)
+} slip_playback_mode_t;
+
+/**
  * @brief Slip loop handle
  */
 typedef struct slip_loop_s {
@@ -36,15 +50,23 @@ typedef struct slip_loop_s {
     
     // Loop parameters
     slip_loop_mode_t mode;        ///< Current mode
+    slip_playback_mode_t playback_mode; ///< Playback mode (regular or DJFX)
     uint32_t loop_length_ms;      ///< Loop length in milliseconds (time mode)
     uint32_t loop_length_beats;   ///< Loop length in beats (beat mode)
+    uint32_t base_length_ms;      ///< Base loop length for DJFX pitch calculation
     float bpm;                     ///< Current BPM (for beat mode)
+    
+    // Playback options
+    bool reverse;                  ///< Play loop in reverse
+    bool scatter;                  ///< Random position jumps (scatter mode)
+    float scatter_probability;    ///< Probability of scatter jump (0.0 to 1.0)
     
     // Playback state
     bool is_active;                ///< Is slip loop currently active?
     uint32_t loop_start_pos;      ///< Start position in main buffer (samples)
     uint32_t loop_end_pos;        ///< End position in main buffer (samples)
     uint32_t loop_read_pos;       ///< Current read position in loop (samples)
+    float read_pos_frac;          ///< Fractional read position for DJFX pitch shifting
     
     // Background playback
     uint32_t background_pos;      ///< Where track would be if not looping (samples)
@@ -80,6 +102,39 @@ void slip_loop_deinit(slip_loop_t *slip);
  * @param bpm BPM value (60-180)
  */
 void slip_loop_set_bpm(slip_loop_t *slip, float bpm);
+
+/**
+ * @brief Set playback mode (regular or DJFX)
+ * 
+ * @param slip Slip loop handle
+ * @param playback_mode Playback mode
+ */
+void slip_loop_set_playback_mode(slip_loop_t *slip, slip_playback_mode_t playback_mode);
+
+/**
+ * @brief Enable/disable reverse playback
+ * 
+ * @param slip Slip loop handle
+ * @param reverse True to play in reverse
+ */
+void slip_loop_set_reverse(slip_loop_t *slip, bool reverse);
+
+/**
+ * @brief Enable/disable scatter mode
+ * 
+ * @param slip Slip loop handle
+ * @param scatter True to enable scatter mode
+ * @param probability Probability of scatter jump (0.0 to 1.0)
+ */
+void slip_loop_set_scatter(slip_loop_t *slip, bool scatter, float probability);
+
+/**
+ * @brief Update loop length (for DJFX mode pitch feedback)
+ * 
+ * @param slip Slip loop handle
+ * @param length_ms New loop length in milliseconds
+ */
+void slip_loop_update_length(slip_loop_t *slip, uint32_t length_ms);
 
 /**
  * @brief Start slip loop (time-based)

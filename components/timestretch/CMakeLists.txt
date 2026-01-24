@@ -3,6 +3,7 @@ idf_component_register(
         "src/granular_engine.c"
         "src/beat_sync.c"
         "src/slip_loop.c"
+        "src/synth_mode.c"
     INCLUDE_DIRS 
         "include"
     PRIV_REQUIRES 

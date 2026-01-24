@@ -14,5 +14,6 @@ idf_component_register(
         freertos
     REQUIRES
         lvgl
+        main
 )
 

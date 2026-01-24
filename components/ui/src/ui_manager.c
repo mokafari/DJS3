@@ -37,23 +37,44 @@ int ui_manager_init(uint32_t width, uint32_t height) {
     ESP_LOGI(TAG, "Initializing UI manager: %ux%u", width, height);
     
     // Initialize LVGL driver
+    ESP_LOGI(TAG, "Calling lvgl_driver_init...");
     int ret = lvgl_driver_init(width, height);
     if (ret != 0) {
         ESP_LOGE(TAG, "Failed to initialize LVGL driver");
         return ret;
     }
+    ESP_LOGI(TAG, "LVGL driver initialized");
     
     // Initialize theme
+    ESP_LOGI(TAG, "Initializing theme...");
     hud_theme_init(s_current_theme);
+    ESP_LOGI(TAG, "Theme initialized");
     
     // Initialize views
+    ESP_LOGI(TAG, "Initializing waveform view...");
     waveform_view_init(width, height);
+    ESP_LOGI(TAG, "Waveform view initialized");
+    
+    ESP_LOGI(TAG, "Initializing telemetry view...");
     telemetry_view_init(width, height);
+    ESP_LOGI(TAG, "Telemetry view initialized");
+    
+    ESP_LOGI(TAG, "Initializing crate view...");
     crate_view_init(width, height);
+    ESP_LOGI(TAG, "Crate view initialized");
+    
+    ESP_LOGI(TAG, "Initializing metadata view...");
     metadata_view_init(width, height);
+    ESP_LOGI(TAG, "Metadata view initialized");
     
     // Show initial view
+    ESP_LOGI(TAG, "Setting initial view to WAVEFORM...");
     ui_manager_set_view(UI_VIEW_WAVEFORM);
+    ESP_LOGI(TAG, "Initial view set");
+    
+    // Force a refresh to ensure everything is drawn
+    lv_refr_now(NULL);
+    ESP_LOGI(TAG, "Forced initial screen refresh");
     
     s_initialized = true;
     ESP_LOGI(TAG, "UI manager initialized successfully");

@@ -47,7 +47,7 @@ void metadata_view_init(uint32_t width, uint32_t height) {
     
     // Track title (scrolling marquee, left side)
     title_label = lv_label_create(metadata_container);
-    lv_obj_set_style_text_font(title_label, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_font(title_label, &lv_font_montserrat_14, 0); // Use available font
     lv_obj_add_style(title_label, style_phosphor, 0);
     lv_label_set_text(title_label, "Track Title");
     lv_obj_set_pos(title_label, 10, view_height / 2 - 9);
@@ -57,7 +57,7 @@ void metadata_view_init(uint32_t width, uint32_t height) {
     
     // Key (Camelot notation, center)
     key_label = lv_label_create(metadata_container);
-    lv_obj_set_style_text_font(key_label, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_font(key_label, &lv_font_montserrat_14, 0); // Use available font
     lv_obj_add_style(key_label, style_phosphor, 0);
     lv_label_set_text(key_label, "4A");
     lv_obj_set_pos(key_label, view_width / 2 - 20, view_height / 2 - 12);
@@ -65,11 +65,15 @@ void metadata_view_init(uint32_t width, uint32_t height) {
     
     // Time remaining (right side)
     time_label = lv_label_create(metadata_container);
-    lv_obj_set_style_text_font(time_label, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_font(time_label, &lv_font_montserrat_14, 0); // Use available font
     lv_obj_add_style(time_label, style_phosphor, 0);
     lv_label_set_text(time_label, "-03:45");
     lv_obj_set_pos(time_label, view_width - 100, view_height / 2 - 9);
     lv_obj_set_style_text_align(time_label, LV_TEXT_ALIGN_RIGHT, 0);
+    
+    // Invalidate to trigger initial redraw
+    lv_obj_invalidate(metadata_container);
+    ESP_LOGI(TAG, "Metadata view created and invalidated");
 }
 
 void metadata_view_update(const char *title, const char *key, int32_t time_remaining) {

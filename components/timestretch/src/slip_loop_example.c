@@ -3,7 +3,8 @@
  * @brief Example usage of slip loop engine
  * 
  * This demonstrates how to use the slip loop engine for short stutters
- * with both time-based and beat-synced modes.
+ * with both time-based and beat-synced modes, including DJFX mode,
+ * reverse, and scatter features.
  */
 
 #include "slip_loop.h"
@@ -20,7 +21,7 @@ void example_slip_loop_usage(void) {
     // Set BPM for beat-synced mode
     slip_loop_set_bpm(&slip, 120.0f);
     
-    // Example 1: Time-based slip loop (500ms stutter)
+    // Example 1: Regular time-based slip loop (500ms stutter)
     uint32_t current_pos = 100000; // Current playback position
     slip_loop_start_time(&slip, current_pos, 500); // 500ms loop
     
@@ -51,6 +52,34 @@ void example_slip_loop_usage(void) {
     }
     
     background_pos = slip_loop_stop(&slip);
+    
+    // Example 3: DJFX mode with pitch feedback
+    current_pos = 300000;
+    slip_loop_start_time(&slip, current_pos, 500); // Start with 500ms loop
+    slip_loop_set_playback_mode(&slip, SLIP_PLAYBACK_DJFX);
+    
+    // Shorten loop to 250ms - pitch will go up (2x speed)
+    slip_loop_update_length(&slip, 250);
+    
+    // Lengthen loop to 1000ms - pitch will go down (0.5x speed)
+    slip_loop_update_length(&slip, 1000);
+    
+    // Example 4: Reverse mode
+    current_pos = 400000;
+    slip_loop_start_time(&slip, current_pos, 500);
+    slip_loop_set_reverse(&slip, true); // Play loop backwards
+    
+    // Example 5: Scatter mode (glitchy random jumps)
+    current_pos = 500000;
+    slip_loop_start_time(&slip, current_pos, 500);
+    slip_loop_set_scatter(&slip, true, 0.15f); // 15% chance of random jump per sample
+    
+    // Example 6: Combined modes (DJFX + Reverse + Scatter)
+    current_pos = 600000;
+    slip_loop_start_time(&slip, current_pos, 500);
+    slip_loop_set_playback_mode(&slip, SLIP_PLAYBACK_DJFX);
+    slip_loop_set_reverse(&slip, true);
+    slip_loop_set_scatter(&slip, true, 0.1f);
     
     // Cleanup
     slip_loop_deinit(&slip);
@@ -86,8 +115,51 @@ void example_integration_with_player(void) {
         // When user presses "slip loop" button:
         // slip_loop_start_time(&slip, current_playback_pos, 500);
         
+        // When user adjusts loop length (DJFX mode):
+        // uint32_t new_length = get_user_loop_length(); // e.g., from encoder
+        // slip_loop_update_length(&slip, new_length);
+        
+        // When user toggles reverse:
+        // slip_loop_set_reverse(&slip, is_reverse_button_pressed());
+        
+        // When user toggles scatter:
+        // slip_loop_set_scatter(&slip, is_scatter_enabled(), scatter_probability);
+        
         // When user releases "slip loop" button:
         // current_playback_pos = slip_loop_stop(&slip);
     }
 }
 
+/**
+ * @brief Example: Real-time loop length adjustment (DJFX mode)
+ */
+void example_djfx_pitch_feedback(void) {
+    slip_loop_t slip;
+    int16_t audio_buffer[44100 * 10];
+    int16_t output_buffer[64 * 2];
+    
+    slip_loop_init(&slip, 44100 * 4, 44100);
+    
+    uint32_t current_pos = 100000;
+    slip_loop_start_time(&slip, current_pos, 500); // Start at 500ms
+    slip_loop_set_playback_mode(&slip, SLIP_PLAYBACK_DJFX);
+    
+    // Simulate user adjusting loop length in real-time
+    uint32_t loop_lengths[] = {250, 333, 500, 750, 1000, 750, 500, 333, 250};
+    int num_lengths = sizeof(loop_lengths) / sizeof(loop_lengths[0]);
+    
+    for (int i = 0; i < num_lengths; i++) {
+        // Update loop length - pitch will change accordingly
+        slip_loop_update_length(&slip, loop_lengths[i]);
+        
+        // Process some audio
+        for (int j = 0; j < 100; j++) {
+            slip_loop_process(&slip, audio_buffer, sizeof(audio_buffer) / 2,
+                             output_buffer, 64);
+            // Output audio...
+        }
+    }
+    
+    slip_loop_stop(&slip);
+    slip_loop_deinit(&slip);
+}

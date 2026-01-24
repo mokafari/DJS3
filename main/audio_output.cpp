@@ -6,6 +6,10 @@
 #include "audio_output.h"
 #include "esp_log.h"
 #include "AudioOutputI2S.h"
+#include "driver/gpio.h"
+#include "board_config.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 static const char *TAG = "audio_output";
 
@@ -23,10 +27,22 @@ bool audio_output_init(void) {
         return true;
     }
 
+#ifdef AUDIO_OUTPUT_DISABLE
+    ESP_LOGI(TAG, "Audio output initialization disabled (AUDIO_OUTPUT_DISABLE defined)");
+    return false;
+#endif
+
     ESP_LOGI(TAG, "Initializing I2S audio output for onboard NS4168 audio chip");
     ESP_LOGI(TAG, "  BCLK: GPIO %d", I2S_BCLK_PIN);
     ESP_LOGI(TAG, "  LRCK: GPIO %d", I2S_LRCK_PIN);
     ESP_LOGI(TAG, "  DIN:  GPIO %d", I2S_DIN_PIN);
+
+    // GPIO 2 (LRCK) may be affected during boot/reset
+    // Ensure it's not being used by another peripheral and add delay for reset signals to settle
+    // Note: I2S driver will configure pins, so we don't configure them as GPIO outputs here
+    vTaskDelay(pdMS_TO_TICKS(50)); // Delay to allow any reset signals to settle
+    
+    ESP_LOGI(TAG, "Proceeding with I2S initialization...");
 
     audio_i2s = new AudioOutputI2S();
     if (!audio_i2s) {

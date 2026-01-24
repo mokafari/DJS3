@@ -31,7 +31,7 @@ static bool styles_initialized = false;
 static void init_styles(void) {
     if (styles_initialized) return;
     
-    lv_style_t *style_phosphor = hud_theme_get_phosphor_style();
+    // Get foreground color from theme
     lv_color_t fg_color = hud_theme_get_foreground_color();
     
     // Normal style (foreground color on black)
@@ -58,21 +58,24 @@ static void init_styles(void) {
  */
 static void list_event_handler(lv_event_t *e) {
     lv_event_code_t code = lv_event_get_code(e);
-    lv_obj_t *list = lv_event_get_target(e);
+    lv_obj_t *obj = lv_event_get_target(e);
     
-    if (code == LV_EVENT_VALUE_CHANGED) {
-        uint32_t id = lv_list_get_selected_btn(list);
-        if (id < num_tracks) {
-            // Update selection
-            if (selected_index >= 0 && selected_index < (int)num_tracks && track_items[selected_index]) {
-                lv_obj_remove_style(track_items[selected_index], &style_selected, 0);
-                lv_obj_add_style(track_items[selected_index], &style_normal, 0);
-            }
-            
-            selected_index = (int)id;
-            if (track_items[selected_index]) {
-                lv_obj_remove_style(track_items[selected_index], &style_normal, 0);
-                lv_obj_add_style(track_items[selected_index], &style_selected, 0);
+    if (code == LV_EVENT_CLICKED) {
+        // Find which button was clicked
+        for (size_t i = 0; i < num_tracks; i++) {
+            if (track_items[i] == obj) {
+                // Update selection
+                if (selected_index >= 0 && selected_index < (int)num_tracks && track_items[selected_index]) {
+                    lv_obj_remove_style(track_items[selected_index], &style_selected, 0);
+                    lv_obj_add_style(track_items[selected_index], &style_normal, 0);
+                }
+                
+                selected_index = (int)i;
+                if (track_items[selected_index]) {
+                    lv_obj_remove_style(track_items[selected_index], &style_normal, 0);
+                    lv_obj_add_style(track_items[selected_index], &style_selected, 0);
+                }
+                break;
             }
         }
     }
@@ -100,7 +103,8 @@ void crate_view_init(uint32_t width, uint32_t height) {
     lv_obj_set_style_border_width(track_list, 0, 0);
     lv_obj_set_style_pad_all(track_list, 0, 0);
     
-    lv_obj_add_event_cb(track_list, list_event_handler, LV_EVENT_VALUE_CHANGED, NULL);
+    // Remove event handler from list (we'll handle clicks on individual buttons)
+    // lv_obj_add_event_cb(track_list, list_event_handler, LV_EVENT_VALUE_CHANGED, NULL);
     
     // Initially hidden
     lv_obj_add_flag(crate_container, LV_OBJ_FLAG_HIDDEN);
@@ -154,6 +158,8 @@ void crate_view_set_tracks(const char **tracks, size_t num_tracks_in) {
             track_items[i] = lv_list_add_btn(track_list, NULL, tracks[i]);
             lv_obj_add_style(track_items[i], &style_normal, 0);
             lv_obj_set_style_text_font(track_items[i], &lv_font_montserrat_14, 0);
+            // Add click event to each button
+            lv_obj_add_event_cb(track_items[i], list_event_handler, LV_EVENT_CLICKED, NULL);
         }
     }
     

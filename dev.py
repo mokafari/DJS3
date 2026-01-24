@@ -262,7 +262,13 @@ def monitor_serial_direct(port=None, baud=115200, auto_exit=False):
             "CORRUPT",
             "Stack overflow",
             "***ERROR***",
-            "E ("  # ESP-IDF error prefix
+            # Note: "E (" removed - ESP-IDF errors are often expected/non-fatal
+            # and stopping on them can mask other failures
+        ]
+        
+        # Separate list for warnings that should be logged but not trigger auto-exit
+        warning_keywords = [
+            "E ("  # ESP-IDF error prefix - log but don't auto-exit
         ]
         
         last_output_time = time.time()
@@ -277,8 +283,18 @@ def monitor_serial_direct(port=None, baud=115200, auto_exit=False):
                         print(line, end='', flush=True)
                         last_output_time = time.time()
                         
-                        # Check for error keywords (log but don't exit unless auto_exit is True)
+                        # Convert to lowercase for keyword matching
                         line_lower = line.lower()
+                        
+                        # Check for warning keywords (log but never exit)
+                        for keyword in warning_keywords:
+                            if keyword.lower() in line_lower:
+                                error_count += 1
+                                print(f"\n{Colors.FAIL}⚠ [{error_count}] Warning detected: '{keyword}'{Colors.ENDC}")
+                                print(f"{Colors.WARNING}Continuing monitoring... (use Ctrl+C to exit){Colors.ENDC}")
+                                break
+                        
+                        # Check for error keywords (log but don't exit unless auto_exit is True)
                         for keyword in error_keywords:
                             if keyword.lower() in line_lower:
                                 error_count += 1

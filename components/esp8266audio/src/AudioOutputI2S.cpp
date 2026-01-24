@@ -107,6 +107,7 @@ bool AudioOutputI2S::begin() {
     esp_err_t ret = i2s_new_channel(&chan_cfg, &_tx_handle, nullptr);
     if (ret != ESP_OK) {
         ESP_LOGE("AudioOutputI2S", "i2s_new_channel failed: %s (0x%x)", esp_err_to_name(ret), ret);
+        fflush(stdout);
         return false;
     }
 
@@ -135,6 +136,8 @@ bool AudioOutputI2S::begin() {
     ret = i2s_channel_init_std_mode(_tx_handle, &std_cfg);
     if (ret != ESP_OK) {
         ESP_LOGE("AudioOutputI2S", "i2s_channel_init_std_mode failed: %s (0x%x)", esp_err_to_name(ret), ret);
+        ESP_LOGE("AudioOutputI2S", "  BCLK: GPIO %d, LRCK: GPIO %d, DIN: GPIO %d", bclkPin, wclkPin, doutPin);
+        fflush(stdout);
         i2s_del_channel(_tx_handle);
         return false;
     }
@@ -148,6 +151,7 @@ bool AudioOutputI2S::begin() {
     ret = i2s_channel_enable(_tx_handle);
     if (ret != ESP_OK) {
         ESP_LOGE("AudioOutputI2S", "i2s_channel_enable failed: %s (0x%x)", esp_err_to_name(ret), ret);
+        fflush(stdout);
         i2s_channel_disable(_tx_handle);
         i2s_del_channel(_tx_handle);
         return false;

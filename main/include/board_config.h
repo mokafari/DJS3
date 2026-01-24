@@ -45,6 +45,9 @@ extern "C" {
  * Display Configuration (NV3041A)
  * ============================================================================ */
 
+// Uncomment to disable display initialization (useful if display is not connected or causes issues)
+// #define DISPLAY_DISABLE
+
 #define SCREEN_WIDTH              480
 #define SCREEN_HEIGHT             272
 #define SCREEN_BPP                16  // RGB565
@@ -128,6 +131,13 @@ extern "C" {
 /* ============================================================================
  * Other Peripherals
  * ============================================================================ */
+
+/* ============================================================================
+ * Audio Configuration
+ * ============================================================================ */
+
+// Uncomment to disable audio output initialization (useful if audio chip is not responding)
+#define AUDIO_OUTPUT_DISABLE
 
 /* I2S Audio (Onboard audio chip - NS4168) */
 /* Pinout from JC4827W543 board documentation: */

@@ -8,20 +8,11 @@
 
 #include <stdint.h>
 #include "ui_manager.h"
+#include "lvgl.h"  // Include LVGL header directly instead of forward declarations
 
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-// Forward declarations for LVGL types
-struct _lv_style_t;
-typedef struct _lv_style_t lv_style_t;
-struct _lv_color_t {
-    uint8_t ch_red;
-    uint8_t ch_green;
-    uint8_t ch_blue;
-};
-typedef struct _lv_color_t lv_color_t;
 
 void hud_theme_init(ui_theme_t theme);
 void hud_theme_apply(ui_theme_t theme);

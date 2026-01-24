@@ -11,6 +11,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "lvgl.h"
+#include "lv_conf_internal.h" // For LV_COLOR_DEPTH
 #include <string.h>
 
 static const char *TAG = "lvgl_driver";
@@ -28,25 +29,108 @@ static bool initialized = false;
 // Touch state
 static lv_indev_data_t touch_data = {0};
 
+// Tick task handle
+static TaskHandle_t tick_task_handle = NULL;
+
+/**
+ * @brief LVGL tick task - calls lv_tick_inc() periodically
+ */
+static void lvgl_tick_task(void *pvParameters) {
+    const TickType_t delay = pdMS_TO_TICKS(1); // 1ms tick
+    
+    while (1) {
+        lv_tick_inc(1); // Tell LVGL 1ms elapsed
+        vTaskDelay(delay);
+    }
+}
+
 /**
  * @brief Display flush callback
+ * Optimized to batch write pixels using single SPI transaction
  */
 static void disp_flush(lv_disp_drv_t *disp_drv, const lv_area_t *area, lv_color_t *color_p) {
     uint32_t w = (area->x2 - area->x1 + 1);
     uint32_t h = (area->y2 - area->y1 + 1);
+    uint32_t pixel_count = w * h;
     
-    // Convert LVGL colors to RGB565 and write to display
-    for (uint32_t y = 0; y < h; y++) {
-        for (uint32_t x = 0; x < w; x++) {
-            lv_color_t color = color_p[y * w + x];
-            uint16_t rgb565 = ((color.ch.red << 8) & 0xF800) | 
-                             ((color.ch.green << 3) & 0x07E0) | 
-                             ((color.ch.blue >> 3) & 0x001F);
-            display_draw_pixel(area->x1 + x, area->y1 + y, rgb565);
+    // Debug: Log first few flushes to verify callback is being called
+    static int flush_count = 0;
+    if (flush_count < 5) {
+        ESP_LOGI(TAG, "Flush #%d: (%d,%d) to (%d,%d), %d pixels", flush_count, area->x1, area->y1, area->x2, area->y2, pixel_count);
+        flush_count++;
+    }
+    
+    // Set display window for the entire area
+    display_set_window(area->x1, area->y1, area->x2, area->y2);
+    
+    // Allocate temporary buffer for RGB565 conversion (in internal RAM for speed)
+    // Use stack buffer for small areas, heap for large areas
+    uint16_t rgb565_buf[256]; // Stack buffer for up to 256 pixels
+    uint16_t *rgb565_ptr = rgb565_buf;
+    bool use_heap = false;
+    
+    if (pixel_count > 256) {
+        // For large areas, allocate on heap (but try internal RAM first)
+        rgb565_ptr = (uint16_t*)heap_caps_malloc(
+            pixel_count * sizeof(uint16_t),
+            MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT
+        );
+        if (!rgb565_ptr) {
+            // Fallback to any RAM
+            rgb565_ptr = (uint16_t*)heap_caps_malloc(
+                pixel_count * sizeof(uint16_t),
+                MALLOC_CAP_8BIT
+            );
+        }
+        if (!rgb565_ptr) {
+            // If allocation fails, use stack buffer in chunks
+            rgb565_ptr = rgb565_buf;
+            pixel_count = 256; // Limit to stack buffer size
+        } else {
+            use_heap = true;
         }
     }
     
-    display_update();
+    // Convert LVGL colors to RGB565
+    // If LV_COLOR_DEPTH == 16, lv_color_t is already RGB565 format in the 'full' field
+    // Note: display_send_data_batch() handles byte-swapping via MSB_32_16_16_SET macro
+    static int color_log_count = 0;
+    static bool color_logging_enabled = true;
+    const int COLOR_LOG_MAX = 10;  // Log first 10 pixels
+    
+    for (uint32_t i = 0; i < pixel_count; i++) {
+        lv_color_t color = color_p[i];
+#if LV_COLOR_DEPTH == 16
+        // LVGL provides RGB565 format - use it directly
+        // display_send_data_batch() will handle byte-swapping for MSB-first display
+        rgb565_ptr[i] = color.full;
+        
+        // Debug: Log first few pixel colors with RGB components
+        if (color_logging_enabled && color_log_count < COLOR_LOG_MAX) {
+            uint16_t rgb565 = color.full;
+            uint8_t r = (rgb565 >> 11) & 0x1F;
+            uint8_t g = (rgb565 >> 5) & 0x3F;
+            uint8_t b = rgb565 & 0x1F;
+            ESP_LOGI(TAG, "LVGL[%d] Pixel %u: full=0x%04X, R=%d(%d), G=%d(%d), B=%d(%d)",
+                     color_log_count, i, rgb565, r, r<<3, g, g<<2, b, b<<3);
+            color_log_count++;
+        }
+#else
+        // Manual conversion for other color depths
+        rgb565_ptr[i] = ((color.ch.red << 8) & 0xF800) | 
+                       ((color.ch.green << 3) & 0x07E0) | 
+                       ((color.ch.blue >> 3) & 0x001F);
+#endif
+    }
+    
+    // Send entire buffer in one SPI transaction (much faster)
+    display_send_data_batch(rgb565_ptr, pixel_count);
+    
+    // Free heap buffer if used
+    if (use_heap && rgb565_ptr != rgb565_buf) {
+        free(rgb565_ptr);
+    }
+    
     lv_disp_flush_ready(disp_drv);
 }
 
@@ -70,33 +154,65 @@ int lvgl_driver_init(uint32_t width, uint32_t height) {
     
     // Initialize LVGL
     lv_init();
+    ESP_LOGI(TAG, "LVGL initialized");
     
-    // Allocate display buffers in PSRAM
+    // Allocate display buffer (40 lines, matching Arduino example)
+    // Try INTERNAL RAM first (faster, more reliable), then fall back to PSRAM
     size_t buf_size = width * 40; // 40 lines buffer
+    size_t buf_bytes = buf_size * sizeof(lv_color_t);
     
+    ESP_LOGI(TAG, "Allocating display buffer: %zu bytes (%zu pixels)", buf_bytes, buf_size);
+    
+    // Try INTERNAL RAM first (like Arduino example)
     disp_draw_buf1 = (lv_color_t*)heap_caps_malloc(
-        buf_size * sizeof(lv_color_t),
-        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT
+        buf_bytes,
+        MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT
     );
+    
+    if (!disp_draw_buf1) {
+        ESP_LOGW(TAG, "Internal RAM allocation failed, trying PSRAM...");
+        // Fall back to any RAM (includes PSRAM)
+        disp_draw_buf1 = (lv_color_t*)heap_caps_malloc(
+            buf_bytes,
+            MALLOC_CAP_8BIT
+        );
+    }
     
     if (!disp_draw_buf1) {
         ESP_LOGE(TAG, "Failed to allocate display buffer 1");
         return -1;
     }
     
+    ESP_LOGI(TAG, "Display buffer 1 allocated at %p", disp_draw_buf1);
+    
+    // Small delay between allocations to avoid watchdog issues
+    vTaskDelay(pdMS_TO_TICKS(10));
+    
+    // Allocate second buffer (for double buffering)
     disp_draw_buf2 = (lv_color_t*)heap_caps_malloc(
-        buf_size * sizeof(lv_color_t),
-        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT
+        buf_bytes,
+        MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT
     );
     
     if (!disp_draw_buf2) {
-        ESP_LOGE(TAG, "Failed to allocate display buffer 2");
-        free(disp_draw_buf1);
-        return -1;
+        ESP_LOGW(TAG, "Internal RAM allocation for buffer 2 failed, trying PSRAM...");
+        disp_draw_buf2 = (lv_color_t*)heap_caps_malloc(
+            buf_bytes,
+            MALLOC_CAP_8BIT
+        );
+    }
+    
+    if (!disp_draw_buf2) {
+        ESP_LOGW(TAG, "Failed to allocate display buffer 2, using single buffer mode");
+        // Single buffer mode (like Arduino example)
+        disp_draw_buf2 = NULL;
+    } else {
+        ESP_LOGI(TAG, "Display buffer 2 allocated at %p", disp_draw_buf2);
     }
     
     // Initialize display buffer
     lv_disp_draw_buf_init(&draw_buf, disp_draw_buf1, disp_draw_buf2, buf_size);
+    ESP_LOGI(TAG, "Display draw buffer initialized");
     
     // Initialize display driver
     lv_disp_drv_init(&disp_drv);
@@ -104,13 +220,49 @@ int lvgl_driver_init(uint32_t width, uint32_t height) {
     disp_drv.ver_res = height;
     disp_drv.flush_cb = disp_flush;
     disp_drv.draw_buf = &draw_buf;
-    lv_disp_drv_register(&disp_drv);
+    lv_disp_t *disp = lv_disp_drv_register(&disp_drv);
+    
+    // Set screen background color (important - otherwise screen appears blank)
+    lv_obj_t *scr = lv_scr_act();
+    lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
+    lv_obj_invalidate(scr); // Force initial redraw
+    
+    // TEST: Create a bright colored rectangle to verify display works
+    lv_obj_t *test_rect = lv_obj_create(scr);
+    lv_obj_set_size(test_rect, 100, 50);
+    lv_obj_set_pos(test_rect, 10, 10);
+    lv_obj_set_style_bg_color(test_rect, lv_color_hex(0xFFB000), 0); // Amber color
+    lv_obj_set_style_bg_opa(test_rect, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(test_rect, 0, 0);
+    lv_obj_invalidate(test_rect);
+    ESP_LOGI(TAG, "Test rectangle created (amber, 100x50 at 10,10)");
+    
+    ESP_LOGI(TAG, "Screen background set and invalidated");
     
     // Initialize input device (touch)
     lv_indev_drv_init(&indev_drv);
     indev_drv.type = LV_INDEV_TYPE_POINTER;
     indev_drv.read_cb = touch_read;
     indev_touch = lv_indev_drv_register(&indev_drv);
+    
+    // Create tick task for LVGL (calls lv_tick_inc() every 1ms)
+    // This is required for LVGL animations and timers to work
+    xTaskCreatePinnedToCore(
+        lvgl_tick_task,
+        "lvgl_tick",
+        2048,  // Stack size
+        NULL,
+        1,  // Priority (low, just needs to run periodically)
+        &tick_task_handle,
+        1   // Core 1 (to balance load)
+    );
+    
+    if (tick_task_handle == NULL) {
+        ESP_LOGE(TAG, "Failed to create LVGL tick task");
+        return -1;
+    }
+    ESP_LOGI(TAG, "LVGL tick task created");
     
     initialized = true;
     ESP_LOGI(TAG, "LVGL driver initialized successfully");
@@ -120,6 +272,12 @@ int lvgl_driver_init(uint32_t width, uint32_t height) {
 
 void lvgl_driver_deinit(void) {
     if (!initialized) return;
+    
+    // Delete tick task
+    if (tick_task_handle != NULL) {
+        vTaskDelete(tick_task_handle);
+        tick_task_handle = NULL;
+    }
     
     if (disp_draw_buf1) {
         free(disp_draw_buf1);

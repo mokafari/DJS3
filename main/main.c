@@ -330,11 +330,17 @@ void app_main(void)
 
     // Initialize audio player (non-critical)
     ESP_LOGI(TAG, "Initializing audio player...");
+    fflush(stdout);
     if (!audio_player_init()) {
         ESP_LOGW(TAG, "Audio player initialization failed - continuing anyway");
+        fflush(stdout);
     } else {
         ESP_LOGI(TAG, "Audio player init complete");
+        fflush(stdout);
     }
+    
+    ESP_LOGI(TAG, "Continuing after audio player init...");
+    fflush(stdout);
 
     // Initialize controls (non-critical)
     ESP_LOGI(TAG, "Initializing controls...");
@@ -352,22 +358,41 @@ void app_main(void)
         ESP_LOGI(TAG, "Pitch control init complete");
     }
 
-    // Initialize display (required for UI)
-    ESP_LOGI(TAG, "Initializing display...");
-    if (!display_init()) {
-        ESP_LOGW(TAG, "Display initialization failed - UI will not work");
-    } else {
-        ESP_LOGI(TAG, "Display init complete");
-    }
+          // Initialize display (required for UI)
+          ESP_LOGI(TAG, "Initializing display...");
+          bool display_ok = display_init();
+          if (!display_ok) {
+              ESP_LOGW(TAG, "Display initialization failed - UI will not work");
+          } else {
+              ESP_LOGI(TAG, "Display init complete");
+              
+              // Enable SPI logging for debugging
+              display_enable_spi_logging(true);
+              
+              // Run byte-order test
+              display_test_byte_order();
+              
+              // Draw test pattern: color bars (comment out if not needed)
+              // display_test_color_bars();
+          }
 
-    // Initialize UI system (replaces waveform_init, uses display_init above)
-    ESP_LOGI(TAG, "Initializing UI system...");
-    if (ui_manager_init(DISPLAY_WIDTH, DISPLAY_HEIGHT) != 0) {
-        ESP_LOGW(TAG, "UI initialization failed - continuing anyway");
+    // Initialize UI system (only if display is initialized)
+    if (display_ok) {
+        ESP_LOGI(TAG, "Initializing UI system...");
+        ESP_LOGI(TAG, "UI dimensions: %dx%d", DISPLAY_WIDTH, DISPLAY_HEIGHT);
+        ESP_LOGI(TAG, "Calling ui_manager_init...");
+        if (ui_manager_init(DISPLAY_WIDTH, DISPLAY_HEIGHT) != 0) {
+            ESP_LOGW(TAG, "UI initialization failed - continuing anyway");
+            display_ok = false; // Mark display as not available for UI
+        } else {
+            ESP_LOGI(TAG, "UI system initialized successfully");
+            // Set default theme
+            ESP_LOGI(TAG, "Setting UI theme to AMBER...");
+            ui_manager_set_theme(UI_THEME_AMBER);
+            ESP_LOGI(TAG, "UI theme set");
+        }
     } else {
-        ESP_LOGI(TAG, "UI system initialized successfully");
-        // Set default theme
-        ui_manager_set_theme(UI_THEME_AMBER);
+        ESP_LOGI(TAG, "Skipping UI initialization (display not available)");
     }
 
     // Initialize track database (non-critical)
@@ -411,14 +436,16 @@ void app_main(void)
         audio_player_update();
         
         // Process UI (call every loop iteration for responsive UI)
-        ui_manager_process();
+        // Only if display and UI are initialized
+        if (display_is_initialized()) {
+            ui_manager_process();
+        }
         
         // Update UI with current state (every 50ms for smooth updates)
         if (now - last_update >= 50) {
-            // Update display (UI handles rendering)
-            display_update();
-            
-            if (audio_player_get_state() == AUDIO_PLAYER_STATE_PLAYING) {
+            // Only update UI if display is initialized
+            if (display_is_initialized()) {
+                if (audio_player_get_state() == AUDIO_PLAYER_STATE_PLAYING) {
                 uint32_t pos = audio_player_get_position();
                 uint32_t dur = audio_player_get_duration();
                 float position = dur > 0 ? (float)pos / (float)dur : 0.0f;
@@ -447,10 +474,11 @@ void app_main(void)
                 const char *key = "4A"; // Placeholder
                 int32_t time_remaining = dur > pos ? (int32_t)(dur - pos) : -(int32_t)pos;
                 ui_manager_update_metadata(title, key, time_remaining);
-            } else {
-                // Clear UI when not playing
-                ui_manager_update_metadata("No Track", "--", 0);
-                ui_manager_update_telemetry(0.0f, 0.0f, 0.0f);
+                } else {
+                    // Clear UI when not playing
+                    ui_manager_update_metadata("No Track", "--", 0);
+                    ui_manager_update_telemetry(0.0f, 0.0f, 0.0f);
+                }
             }
             
             last_update = now;

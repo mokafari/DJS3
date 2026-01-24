@@ -11,6 +11,20 @@
 #include <math.h>
 #include <stdlib.h>
 
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
+// Helper: Linear interpolation
+static float lerp(float a, float b, float t) {
+    return a + (b - a) * t;
+}
+
+// Helper: Random float between 0 and 1
+static float random_float(void) {
+    return (float)rand() / (float)RAND_MAX;
+}
+
 static const char *TAG = "slip_loop";
 
 // Default buffer size: 4 seconds @ 44.1kHz = ~176k samples
@@ -40,8 +54,14 @@ int slip_loop_init(slip_loop_t *slip, size_t buffer_size_samples, uint32_t sampl
     slip->buffer_size_samples = buffer_size_samples;
     slip->sample_rate = sample_rate;
     slip->mode = SLIP_LOOP_MODE_OFF;
+    slip->playback_mode = SLIP_PLAYBACK_REGULAR;
     slip->is_active = false;
     slip->bpm = 120.0f;
+    slip->reverse = false;
+    slip->scatter = false;
+    slip->scatter_probability = 0.1f;
+    slip->base_length_ms = 0;
+    slip->read_pos_frac = 0.0f;
     slip->buffer_filled = false;
     
     ESP_LOGI(TAG, "Slip loop initialized: %zu samples @ %u Hz", 
@@ -67,6 +87,50 @@ void slip_loop_set_bpm(slip_loop_t *slip, float bpm) {
     slip->bpm = fmaxf(60.0f, fminf(180.0f, bpm));
 }
 
+void slip_loop_set_playback_mode(slip_loop_t *slip, slip_playback_mode_t playback_mode) {
+    if (!slip) return;
+    slip->playback_mode = playback_mode;
+    if (playback_mode == SLIP_PLAYBACK_DJFX && slip->is_active) {
+        // Store base length for pitch calculation
+        slip->base_length_ms = slip->loop_length_ms;
+    }
+    ESP_LOGI(TAG, "Playback mode set: %d", playback_mode);
+}
+
+void slip_loop_set_reverse(slip_loop_t *slip, bool reverse) {
+    if (!slip) return;
+    slip->reverse = reverse;
+    ESP_LOGI(TAG, "Reverse mode: %s", reverse ? "enabled" : "disabled");
+}
+
+void slip_loop_set_scatter(slip_loop_t *slip, bool scatter, float probability) {
+    if (!slip) return;
+    slip->scatter = scatter;
+    slip->scatter_probability = fmaxf(0.0f, fminf(1.0f, probability));
+    ESP_LOGI(TAG, "Scatter mode: %s (probability: %.2f)", 
+             scatter ? "enabled" : "disabled", slip->scatter_probability);
+}
+
+void slip_loop_update_length(slip_loop_t *slip, uint32_t length_ms) {
+    if (!slip || !slip->is_active) return;
+    
+    uint32_t length_samples = (length_ms * slip->sample_rate) / 1000;
+    
+    if (length_samples > slip->buffer_size_samples) {
+        ESP_LOGW(TAG, "Requested length (%u samples) exceeds buffer size", length_samples);
+        return;
+    }
+    
+    slip->loop_length_ms = length_ms;
+    slip->loop_end_pos = slip->loop_start_pos + length_samples;
+    
+    // Clamp read position to new loop length
+    uint32_t loop_length = slip->loop_end_pos - slip->loop_start_pos;
+    if (slip->loop_read_pos >= loop_length) {
+        slip->loop_read_pos = loop_length - 1;
+    }
+}
+
 int slip_loop_start_time(slip_loop_t *slip, uint32_t start_pos, uint32_t length_ms) {
     if (!slip || length_ms == 0) {
         return -1;
@@ -83,9 +147,11 @@ int slip_loop_start_time(slip_loop_t *slip, uint32_t start_pos, uint32_t length_
     
     slip->mode = SLIP_LOOP_MODE_TIME;
     slip->loop_length_ms = length_ms;
+    slip->base_length_ms = length_ms; // Store base length for DJFX
     slip->loop_start_pos = start_pos;
     slip->loop_end_pos = start_pos + length_samples;
     slip->loop_read_pos = 0;
+    slip->read_pos_frac = 0.0f;
     slip->background_start_pos = start_pos;
     slip->background_pos = start_pos;
     slip->is_active = true;
@@ -116,9 +182,11 @@ int slip_loop_start_beat(slip_loop_t *slip, uint32_t start_pos, uint32_t length_
     slip->mode = SLIP_LOOP_MODE_BEAT;
     slip->loop_length_beats = length_beats;
     slip->loop_length_ms = length_ms;
+    slip->base_length_ms = length_ms; // Store base length for DJFX
     slip->loop_start_pos = start_pos;
     slip->loop_end_pos = start_pos + length_samples;
     slip->loop_read_pos = 0;
+    slip->read_pos_frac = 0.0f;
     slip->background_start_pos = start_pos;
     slip->background_pos = start_pos;
     slip->is_active = true;
@@ -163,21 +231,87 @@ void slip_loop_process(slip_loop_t *slip,
         // SLIP MODE: Read from loop buffer
         uint32_t loop_length_samples = slip->loop_end_pos - slip->loop_start_pos;
         
+        // Calculate pitch factor for DJFX mode
+        float pitch_factor = 1.0f;
+        if (slip->playback_mode == SLIP_PLAYBACK_DJFX && slip->base_length_ms > 0) {
+            // Pitch factor: shorter loop = higher pitch, longer loop = lower pitch
+            pitch_factor = (float)slip->base_length_ms / (float)slip->loop_length_ms;
+            // Clamp to reasonable range (0.25x to 4x)
+            pitch_factor = fmaxf(0.25f, fminf(4.0f, pitch_factor));
+        }
+        
         for (size_t i = 0; i < num_samples; i++) {
-            // Check if we've reached the end of the loop
-            if (slip->loop_read_pos >= loop_length_samples) {
-                slip->loop_read_pos = 0; // Loop back to start
+            // Scatter mode: random position jumps
+            if (slip->scatter && random_float() < slip->scatter_probability) {
+                slip->loop_read_pos = (uint32_t)(random_float() * loop_length_samples);
+                slip->read_pos_frac = 0.0f;
+            }
+            
+            // Calculate read position
+            float read_pos = (float)slip->loop_read_pos + slip->read_pos_frac;
+            
+            // Handle loop boundaries
+            if (read_pos >= loop_length_samples) {
+                read_pos = fmodf(read_pos, loop_length_samples);
+                slip->loop_read_pos = (uint32_t)read_pos;
+                slip->read_pos_frac = read_pos - slip->loop_read_pos;
+            } else if (read_pos < 0.0f) {
+                read_pos = loop_length_samples + read_pos;
+                slip->loop_read_pos = (uint32_t)read_pos;
+                slip->read_pos_frac = read_pos - slip->loop_read_pos;
+            }
+            
+            // Reverse mode: read backwards
+            float actual_read_pos = read_pos;
+            if (slip->reverse) {
+                actual_read_pos = loop_length_samples - read_pos - 1.0f;
+                if (actual_read_pos < 0.0f) actual_read_pos = 0.0f;
             }
             
             // Calculate position in circular buffer (stereo samples)
-            uint32_t buffer_sample_idx = (slip->loop_start_pos + slip->loop_read_pos) % slip->buffer_size_samples;
+            uint32_t buffer_sample_idx = (slip->loop_start_pos + (uint32_t)actual_read_pos) % slip->buffer_size_samples;
             uint32_t buffer_stereo_idx = buffer_sample_idx * 2; // Stereo interleaved
             
-            // Read stereo sample from circular buffer
-            output[i * 2] = slip->circular_buffer[buffer_stereo_idx];         // Left
-            output[i * 2 + 1] = slip->circular_buffer[buffer_stereo_idx + 1]; // Right
+            // DJFX mode: use fractional position for pitch shifting (linear interpolation)
+            if (slip->playback_mode == SLIP_PLAYBACK_DJFX && pitch_factor != 1.0f) {
+                float frac = actual_read_pos - (uint32_t)actual_read_pos;
+                uint32_t idx0 = buffer_sample_idx;
+                uint32_t idx1 = (idx0 + 1) % slip->buffer_size_samples;
+                
+                int16_t sample0_l = slip->circular_buffer[idx0 * 2];
+                int16_t sample0_r = slip->circular_buffer[idx0 * 2 + 1];
+                int16_t sample1_l = slip->circular_buffer[idx1 * 2];
+                int16_t sample1_r = slip->circular_buffer[idx1 * 2 + 1];
+                
+                output[i * 2] = (int16_t)lerp((float)sample0_l, (float)sample1_l, frac);
+                output[i * 2 + 1] = (int16_t)lerp((float)sample0_r, (float)sample1_r, frac);
+            } else {
+                // Regular mode: direct read
+                output[i * 2] = slip->circular_buffer[buffer_stereo_idx];         // Left
+                output[i * 2 + 1] = slip->circular_buffer[buffer_stereo_idx + 1]; // Right
+            }
             
-            slip->loop_read_pos++;
+            // Advance read position
+            if (slip->reverse) {
+                slip->read_pos_frac -= pitch_factor;
+                while (slip->read_pos_frac < 0.0f) {
+                    slip->read_pos_frac += 1.0f;
+                    if (slip->loop_read_pos == 0) {
+                        slip->loop_read_pos = loop_length_samples - 1;
+                    } else {
+                        slip->loop_read_pos--;
+                    }
+                }
+            } else {
+                slip->read_pos_frac += pitch_factor;
+                while (slip->read_pos_frac >= 1.0f) {
+                    slip->read_pos_frac -= 1.0f;
+                    slip->loop_read_pos++;
+                    if (slip->loop_read_pos >= loop_length_samples) {
+                        slip->loop_read_pos = 0;
+                    }
+                }
+            }
             
             // Update background position (track continues playing silently)
             slip->background_pos++;

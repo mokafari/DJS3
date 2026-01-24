@@ -5,6 +5,12 @@
  * This engine implements a beat-synced granular synthesis algorithm that allows
  * for time-stretching while maintaining beat alignment. It exposes parameters for
  * creative sound design (metallic ringing, lush scapes, glitchy madness).
+ * 
+ * Features:
+ * - Multi-grain synthesis with overlapping grains for density effects
+ * - Window functions (Hann/Hamming) to prevent clicks
+ * - Beat-synced grid-locked freezing
+ * - Per-grain jitter for glitch effects
  */
 
 #ifndef GRANULAR_ENGINE_H
@@ -19,6 +25,21 @@ extern "C" {
 #endif
 
 /**
+ * @brief Maximum number of simultaneous grains
+ */
+#define GRANULAR_MAX_GRAINS 16
+
+/**
+ * @brief Window function type
+ */
+typedef enum {
+    GRANULAR_WINDOW_HANN = 0,     ///< Hann window (smooth, musical)
+    GRANULAR_WINDOW_HAMMING,      ///< Hamming window (slightly brighter)
+    GRANULAR_WINDOW_TRIANGLE,     ///< Triangle window (sharp attack)
+    GRANULAR_WINDOW_RECTANGLE     ///< Rectangle (no window, for glitch)
+} granular_window_t;
+
+/**
  * @brief Granular engine parameters
  */
 typedef struct {
@@ -28,19 +49,31 @@ typedef struct {
     float pitch_factor;       ///< Pitch multiplier (0.5-2.0)
     float traverse_speed;     ///< File traversal speed (0.0-2.0)
     bool beat_sync_enabled;   ///< Enable beat-synced grain restart
-    bool freeze_mode;          ///< Freeze current position (infinite loop)
+    bool freeze_mode;         ///< Freeze current position (infinite loop)
+    granular_window_t window; ///< Window function type
 } granular_params_t;
+
+/**
+ * @brief Individual grain state
+ */
+typedef struct {
+    float read_pos;           ///< Current read position in buffer (samples)
+    float start_pos;          ///< Grain start position (samples)
+    float age;                ///< Grain age in samples (0 to grain_size)
+    bool active;              ///< Is grain currently active
+    float jitter_offset;      ///< Per-grain jitter offset
+} grain_t;
 
 /**
  * @brief Granular engine state
  */
 typedef struct {
-    float read_head;          ///< Current audio read position (samples)
+    grain_t grains[GRANULAR_MAX_GRAINS]; ///< Active grains
     float file_position;       ///< Virtual file position (for time-stretch)
-    float grain_start;         ///< Current grain start position
     float master_phase;        ///< Master clock phase (0.0 to samples_per_beat)
     double samples_per_beat;  ///< Samples per beat (calculated from BPM)
-    bool grain_active;         ///< Is grain currently playing
+    uint32_t next_beat_sample; ///< Next beat boundary in samples
+    float current_beat_start;  ///< Start position of current beat
 } granular_state_t;
 
 /**
@@ -60,7 +93,7 @@ typedef struct granular_engine_s {
     
     // Internal counters
     uint32_t grain_counter;    ///< Grain playback counter
-    float jitter_accumulator;   ///< Jitter random offset
+    float grain_spawn_counter; ///< Counter for grain spawning (non-beat-sync mode)
 } granular_engine_t;
 
 /**
@@ -142,6 +175,23 @@ void granular_engine_reset_grain(granular_engine_t *engine);
  * @return Default parameters structure
  */
 granular_params_t granular_engine_default_params(void);
+
+/**
+ * @brief Calculate window function value
+ * 
+ * @param window Window function type
+ * @param position Position in grain (0.0 to 1.0)
+ * @return Window value (0.0 to 1.0)
+ */
+float granular_window_value(granular_window_t window, float position);
+
+/**
+ * @brief Get number of active grains
+ * 
+ * @param engine Engine handle
+ * @return Number of active grains
+ */
+uint32_t granular_engine_get_active_grain_count(const granular_engine_t *engine);
 
 #ifdef __cplusplus
 }
