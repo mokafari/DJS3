@@ -1,0 +1,120 @@
+/**
+ * @file audio_output.c
+ * @brief Audio output implementation for PCM5102A DAC via I2S
+ */
+
+#include "audio_output.h"
+#include "esp_log.h"
+
+static const char *TAG = "audio_output";
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#include "AudioOutputI2S.h"
+
+static AudioOutputI2S *audio_i2s = nullptr;
+static uint32_t current_sample_rate = 44100;
+static uint8_t current_channels = 2;
+
+bool audio_output_init(void) {
+    if (audio_i2s != nullptr) {
+        ESP_LOGW(TAG, "Audio output already initialized");
+        return true;
+    }
+
+    ESP_LOGI(TAG, "Initializing I2S audio output for PCM5102A");
+    ESP_LOGI(TAG, "  BCLK: GPIO %d", I2S_BCLK_PIN);
+    ESP_LOGI(TAG, "  LRCK: GPIO %d", I2S_LRCK_PIN);
+    ESP_LOGI(TAG, "  DIN:  GPIO %d", I2S_DIN_PIN);
+
+    audio_i2s = new AudioOutputI2S();
+    if (!audio_i2s) {
+        ESP_LOGE(TAG, "Failed to create AudioOutputI2S");
+        return false;
+    }
+
+    // Configure pinout for PCM5102A
+    if (!audio_i2s->SetPinout(I2S_BCLK_PIN, I2S_LRCK_PIN, I2S_DIN_PIN, I2S_MCLK_PIN)) {
+        ESP_LOGE(TAG, "Failed to set I2S pinout");
+        delete audio_i2s;
+        audio_i2s = nullptr;
+        return false;
+    }
+
+    // Set sample rate and channels
+    audio_i2s->SetRate(current_sample_rate);
+    audio_i2s->SetChannels(current_channels);
+
+    // Initialize I2S
+    if (!audio_i2s->begin()) {
+        ESP_LOGE(TAG, "Failed to begin I2S");
+        delete audio_i2s;
+        audio_i2s = nullptr;
+        return false;
+    }
+
+    ESP_LOGI(TAG, "Audio output initialized: %d Hz, %d channels", 
+             current_sample_rate, current_channels);
+    return true;
+}
+
+void audio_output_deinit(void) {
+    if (audio_i2s != nullptr) {
+        audio_i2s->stop();
+        delete audio_i2s;
+        audio_i2s = nullptr;
+        ESP_LOGI(TAG, "Audio output deinitialized");
+    }
+}
+
+bool audio_output_set_rate(uint32_t sample_rate) {
+    if (audio_i2s == nullptr) {
+        ESP_LOGE(TAG, "Audio output not initialized");
+        return false;
+    }
+
+    if (audio_i2s->SetRate(sample_rate)) {
+        current_sample_rate = sample_rate;
+        ESP_LOGI(TAG, "Sample rate set to %d Hz", sample_rate);
+        return true;
+    }
+    return false;
+}
+
+uint32_t audio_output_get_rate(void) {
+    return current_sample_rate;
+}
+
+bool audio_output_set_channels(uint8_t channels) {
+    if (audio_i2s == nullptr) {
+        ESP_LOGE(TAG, "Audio output not initialized");
+        return false;
+    }
+
+    if (audio_i2s->SetChannels(channels)) {
+        current_channels = channels;
+        ESP_LOGI(TAG, "Channels set to %d", channels);
+        return true;
+    }
+    return false;
+}
+
+bool audio_output_set_gain(float gain) {
+    if (audio_i2s == nullptr) {
+        ESP_LOGE(TAG, "Audio output not initialized");
+        return false;
+    }
+
+    return audio_i2s->SetGain(gain);
+}
+
+AudioOutputI2S* audio_output_get_i2s(void) {
+    return audio_i2s;
+}
+
+#ifdef __cplusplus
+}
+#endif
+

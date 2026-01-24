@@ -1,0 +1,18 @@
+idf_component_register(
+    SRCS 
+        "src/ui_manager.c"
+        "src/hud_theme.c"
+        "src/waveform_view.c"
+        "src/telemetry_view.c"
+        "src/crate_view.c"
+        "src/metadata_view.c"
+        "src/lvgl_driver.c"
+    INCLUDE_DIRS 
+        "include"
+    PRIV_REQUIRES 
+        driver
+        freertos
+    REQUIRES
+        lvgl
+)
+
