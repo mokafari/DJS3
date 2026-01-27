@@ -14,6 +14,14 @@ extern "C" {
 #endif
 
 /**
+ * @brief Player mode
+ */
+typedef enum {
+    AUDIO_PLAYER_MODE_SIMPLE = 0,    ///< Simple direct playback mode
+    AUDIO_PLAYER_MODE_GRANULAR       ///< Granular synthesis mode with streaming buffer
+} audio_player_mode_t;
+
+/**
  * @brief Player state
  */
 typedef enum {
@@ -97,6 +105,49 @@ bool audio_player_seek(uint32_t position);
  * @brief Update player (call in main loop)
  */
 void audio_player_update(void);
+
+/**
+ * @brief Set player mode (simple or granular)
+ * 
+ * @param mode Mode to use
+ * @return true on success, false on failure
+ */
+bool audio_player_set_mode(audio_player_mode_t mode);
+
+/**
+ * @brief Get current player mode
+ * 
+ * @return Current mode
+ */
+audio_player_mode_t audio_player_get_mode(void);
+
+/**
+ * @brief Set granular engine speed (for granular mode)
+ * 
+ * @param speed Speed (0.0 = freeze, 1.0 = normal, >1.0 = faster)
+ */
+void audio_player_set_granular_speed(float speed);
+
+/**
+ * @brief Set granular engine grain size (for granular mode)
+ * 
+ * @param grain_size_ms Grain size in milliseconds
+ */
+void audio_player_set_granular_grain_size(float grain_size_ms);
+
+/**
+ * @brief Set granular engine pitch (for granular mode)
+ * 
+ * @param pitch Pitch multiplier (1.0 = normal)
+ */
+void audio_player_set_granular_pitch(float pitch);
+
+/**
+ * @brief Set granular engine jitter (for granular mode)
+ * 
+ * @param jitter Jitter amount (0.0 = none, 1.0 = maximum)
+ */
+void audio_player_set_granular_jitter(float jitter);
 
 #ifdef __cplusplus
 }

@@ -104,6 +104,15 @@ int granular_engine_init(granular_engine_t *engine,
     engine->params = granular_engine_default_params();
     engine->bpm = 120.0f;
     engine->sync_enabled = false;
+    engine->mode = GRANULAR_MODE_MULTI_GRAIN; // Default to multi-grain mode
+    
+    // Initialize streaming mode state
+    engine->write_index = 0;
+    engine->streaming.read_index = 0.0;
+    engine->streaming.grain_start = 0.0;
+    engine->streaming.speed = 1.0f;
+    engine->streaming.grain_size_samples = (engine->params.grain_size_ms * sample_rate) / 1000.0f;
+    engine->streaming.jitter_amount = 0.0f;
     
     // Initialize state
     engine->state.file_position = 0.0f;
@@ -242,11 +251,97 @@ uint32_t granular_engine_get_active_grain_count(const granular_engine_t *engine)
     return count;
 }
 
+// Forward declarations for static functions
+static void process_streaming_mode(granular_engine_t *engine, 
+                                  int16_t *output, 
+                                  size_t num_samples);
+static void process_multi_grain_mode(granular_engine_t *engine, 
+                                    int16_t *output, 
+                                    size_t num_samples);
+
 void granular_engine_process(granular_engine_t *engine, 
                              int16_t *output, 
                              size_t num_samples) {
     if (!engine || !output || num_samples == 0) return;
     
+    // Check mode and process accordingly
+    if (engine->mode == GRANULAR_MODE_STREAMING) {
+        // Simple grain loop mode (as per spec)
+        process_streaming_mode(engine, output, num_samples);
+    } else {
+        // Multi-grain synthesis mode (existing)
+        process_multi_grain_mode(engine, output, num_samples);
+    }
+}
+
+/**
+ * @brief Process audio in streaming mode (simple grain loop)
+ */
+static void process_streaming_mode(granular_engine_t *engine, 
+                                  int16_t *output, 
+                                  size_t num_samples) {
+    const float pitch = engine->params.pitch_factor;
+    const float speed = engine->streaming.speed;
+    const float grain_size = engine->streaming.grain_size_samples;
+    
+    for (size_t i = 0; i < num_samples; i++) {
+        // 1. Calculate read position
+        int32_t idx = (int32_t)engine->streaming.read_index;
+        
+        // 2. Read sample from buffer
+        idx = idx % engine->buffer_size;
+        if (idx < 0) idx += engine->buffer_size;
+        
+        int16_t sample = engine->audio_buffer[idx];
+        
+        // Output stereo (dual mono for now)
+        output[i * 2] = sample;     // Left
+        output[i * 2 + 1] = sample; // Right
+        
+        // 3. Move read head
+        engine->streaming.read_index += pitch;
+        
+        // 4. Granular loop check
+        double dist = engine->streaming.read_index - engine->streaming.grain_start;
+        
+        if (dist > grain_size || dist < 0) {
+            // Reset grain
+            // In streaming mode, grainStart moves forward slowly
+            engine->streaming.grain_start += (speed * 0.5);
+            
+            // Add jitter
+            if (engine->streaming.jitter_amount > 0.0f) {
+                float jitter_offset = (random_float_signed() * 500.0f) * engine->streaming.jitter_amount;
+                engine->streaming.grain_start += jitter_offset;
+            }
+            
+            // Snap read head back to grain start
+            engine->streaming.read_index = engine->streaming.grain_start;
+        }
+        
+        // 5. Circular wrap safety
+        if (engine->streaming.read_index >= engine->buffer_size) {
+            engine->streaming.read_index -= engine->buffer_size;
+        }
+        if (engine->streaming.read_index < 0) {
+            engine->streaming.read_index += engine->buffer_size;
+        }
+        
+        if (engine->streaming.grain_start >= engine->buffer_size) {
+            engine->streaming.grain_start -= engine->buffer_size;
+        }
+        if (engine->streaming.grain_start < 0) {
+            engine->streaming.grain_start += engine->buffer_size;
+        }
+    }
+}
+
+/**
+ * @brief Process audio in multi-grain mode (existing implementation)
+ */
+static void process_multi_grain_mode(granular_engine_t *engine, 
+                                     int16_t *output, 
+                                     size_t num_samples) {
     const float sample_rate = (float)engine->sample_rate;
     const float grain_size_samples = (engine->params.grain_size_ms * sample_rate) / 1000.0f;
     const float density_factor = engine->params.density_percent / 100.0f;
@@ -258,7 +353,7 @@ void granular_engine_process(granular_engine_t *engine,
     
     // Calculate samples per beat for beat sync
     const double samples_per_beat = engine->state.samples_per_beat;
-    const double samples_per_16th = samples_per_beat / 4.0;
+    // const double samples_per_16th = samples_per_beat / 4.0; // Reserved for future use
     
     for (size_t i = 0; i < num_samples; i++) {
         // Advance master clock (for beat sync)
@@ -365,4 +460,100 @@ void granular_engine_process(granular_engine_t *engine,
         
         engine->grain_counter++;
     }
+}
+
+// Add new functions at the end of the file
+void granular_engine_set_mode(granular_engine_t *engine, granular_mode_t mode) {
+    if (!engine) return;
+    engine->mode = mode;
+    ESP_LOGI(TAG, "Granular engine mode set to: %s", 
+             mode == GRANULAR_MODE_STREAMING ? "streaming" : "multi-grain");
+}
+
+size_t granular_engine_write_chunk(granular_engine_t *engine, const int16_t *data, size_t samples) {
+    if (!engine || !data || samples == 0) return 0;
+    
+    // Write samples to circular buffer at write_index
+    // data is stereo interleaved (L, R, L, R, ...)
+    // buffer stores mono samples, so we'll write left channel only for now
+    // TODO: Support stereo if needed
+    
+    size_t written = 0;
+    for (size_t i = 0; i < samples; i++) {
+        // Write left channel (every 2nd sample in interleaved data)
+        int32_t buffer_idx = engine->write_index % engine->buffer_size;
+        engine->audio_buffer[buffer_idx] = data[i * 2]; // Left channel
+        
+        engine->write_index++;
+        written++;
+        
+        // Wrap around
+        if (engine->write_index >= engine->buffer_size) {
+            engine->write_index = 0;
+        }
+    }
+    
+    return written;
+}
+
+int32_t granular_engine_get_write_index(const granular_engine_t *engine) {
+    if (!engine) return 0;
+    return engine->write_index;
+}
+
+int32_t granular_engine_get_read_index(const granular_engine_t *engine) {
+    if (!engine) return 0;
+    
+    if (engine->mode == GRANULAR_MODE_STREAMING) {
+        return (int32_t)engine->streaming.read_index;
+    } else {
+        // In multi-grain mode, use file_position as read index
+        return (int32_t)engine->state.file_position;
+    }
+}
+
+bool granular_engine_check_buffer_distance(const granular_engine_t *engine, 
+                                          int32_t loop_limit, 
+                                          int32_t refill_threshold) {
+    if (!engine) return false;
+    
+    int32_t write_idx = granular_engine_get_write_index(engine);
+    int32_t read_idx = granular_engine_get_read_index(engine);
+    
+    // Calculate distance (handle wrap-around)
+    int32_t distance;
+    if (write_idx >= read_idx) {
+        distance = write_idx - read_idx;
+    } else {
+        // Wrap-around case
+        distance = (engine->buffer_size - read_idx) + write_idx;
+    }
+    
+    // Check if decoder should pause
+    if (distance > loop_limit) {
+        return true; // Pause decoder
+    }
+    
+    // Check if decoder should resume
+    if (distance < refill_threshold) {
+        return false; // Resume decoder
+    }
+    
+    // Keep current state (don't change)
+    // Return false to continue/resume
+    return false;
+}
+
+void granular_engine_set_streaming_params(granular_engine_t *engine, 
+                                         float speed, 
+                                         float grain_size_samples, 
+                                         float jitter) {
+    if (!engine) return;
+    
+    engine->streaming.speed = fmaxf(0.0f, fminf(2.0f, speed));
+    engine->streaming.grain_size_samples = fmaxf(100.0f, fminf(10000.0f, grain_size_samples));
+    engine->streaming.jitter_amount = fmaxf(0.0f, fminf(1.0f, jitter));
+    
+    ESP_LOGI(TAG, "Streaming params: speed=%.2f, grain_size=%.0f, jitter=%.2f",
+             engine->streaming.speed, engine->streaming.grain_size_samples, engine->streaming.jitter_amount);
 }

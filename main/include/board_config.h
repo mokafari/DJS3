@@ -121,12 +121,14 @@ extern "C" {
 
 /* Jog Wheel */
 #define JOG_WHEEL_A_PIN           17  // Rotary encoder A
-#define JOG_WHEEL_B_PIN           36  // Rotary encoder B (changed from 20 to avoid USB conflict)
+// GPIO 36 conflicts with Octal PSRAM (required for N4R8/N8R8 modules). Disabled for stability.
+#define JOG_WHEEL_B_PIN           (-1) // 36  // Rotary encoder B
 #define JOG_WHEEL_TOUCH_PIN       46  // Touch detection for scratch mode
 
 /* Pitch Control */
-#define PITCH_ENCODER_A_PIN       33  // Pitch encoder A
-#define PITCH_ENCODER_B_PIN       34  // Pitch encoder B
+// GPIO 33/34 conflict with Octal PSRAM. Disabled for stability.
+#define PITCH_ENCODER_A_PIN       (-1) // 33  // Pitch encoder A
+#define PITCH_ENCODER_B_PIN       (-1) // 34  // Pitch encoder B
 
 /* ============================================================================
  * Other Peripherals
@@ -137,8 +139,14 @@ extern "C" {
  * ============================================================================ */
 
 // Uncomment to disable audio output initialization (useful if audio chip is not responding)
-#define AUDIO_OUTPUT_DISABLE
+// #define AUDIO_OUTPUT_DISABLE
 
+/* Audio Chip Selection */
+// Uncomment one of the following to select audio chip:
+#define AUDIO_CHIP_NS4168           1   // Onboard NS4168 audio chip (default)
+// #define AUDIO_CHIP_PCM5102A        1   // External PCM5102A DAC
+
+#if defined(AUDIO_CHIP_NS4168) && AUDIO_CHIP_NS4168
 /* I2S Audio (Onboard audio chip - NS4168) */
 /* Pinout from JC4827W543 board documentation: */
 /*   IO2:  SPECK_LRCLK (I2S LRCK/WS) */
@@ -148,6 +156,25 @@ extern "C" {
 #define I2S_LRCK_PIN              2   // Word Select (LRCK/WS) - SPECK_LRCLK
 #define I2S_DIN_PIN               41  // Data Input (DIN) - SPECK_DIN
 #define I2S_MCLK_PIN              (-1) // Master Clock (not used for onboard chip)
+
+#elif defined(AUDIO_CHIP_PCM5102A) && AUDIO_CHIP_PCM5102A
+/* I2S Audio (External PCM5102A DAC) */
+/* Pinout as per spec: */
+/*   GPIO 14: BCK (Bit Clock) */
+/*   GPIO 15: WS (LRCK/Word Select) */
+/*   GPIO 16: DIN (Data Input) */
+#define I2S_BCLK_PIN              14  // Bit Clock (BCK)
+#define I2S_LRCK_PIN              15  // Word Select (LRCK/WS)
+#define I2S_DIN_PIN               16  // Data Input (DIN)
+#define I2S_MCLK_PIN              (-1) // Master Clock (not used for PCM5102A)
+
+#else
+/* Default to NS4168 if no chip selected */
+#define I2S_BCLK_PIN              42
+#define I2S_LRCK_PIN              2
+#define I2S_DIN_PIN               41
+#define I2S_MCLK_PIN              (-1)
+#endif
 
 /* ============================================================================
  * SD Card Configuration

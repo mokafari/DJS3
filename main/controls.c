@@ -69,7 +69,9 @@ bool controls_init(button_event_cb_t button_cb, void *arg) {
     
     // Add all button pins to bit mask
     for (int i = 0; i < BUTTON_COUNT; i++) {
-        io_conf.pin_bit_mask |= (1ULL << button_pins[i]);
+        if (PIN_IS_VALID(button_pins[i])) {
+            io_conf.pin_bit_mask |= (1ULL << button_pins[i]);
+        }
     }
     
     gpio_config(&io_conf);
@@ -79,41 +81,60 @@ bool controls_init(button_event_cb_t button_cb, void *arg) {
     
     // Attach ISR handlers
     for (int i = 0; i < BUTTON_COUNT; i++) {
-        gpio_set_intr_type(button_pins[i], GPIO_INTR_ANYEDGE);
-        gpio_isr_handler_add(button_pins[i], gpio_isr_handler, (void*)button_pins[i]);
+        if (PIN_IS_VALID(button_pins[i])) {
+            gpio_set_intr_type(button_pins[i], GPIO_INTR_ANYEDGE);
+            gpio_isr_handler_add(button_pins[i], gpio_isr_handler, (void*)button_pins[i]);
+        }
     }
     
     // Configure jog wheel encoder pins
+    uint64_t jog_mask = 0;
+    if (PIN_IS_VALID(JOG_WHEEL_A_PIN)) jog_mask |= (1ULL << JOG_WHEEL_A_PIN);
+    if (PIN_IS_VALID(JOG_WHEEL_B_PIN)) jog_mask |= (1ULL << JOG_WHEEL_B_PIN);
+    if (PIN_IS_VALID(JOG_WHEEL_TOUCH_PIN)) jog_mask |= (1ULL << JOG_WHEEL_TOUCH_PIN);
+
     gpio_config_t jog_conf = {
         .intr_type = GPIO_INTR_DISABLE,
         .mode = GPIO_MODE_INPUT,
-        .pin_bit_mask = (1ULL << JOG_WHEEL_A_PIN) | (1ULL << JOG_WHEEL_B_PIN) | (1ULL << JOG_WHEEL_TOUCH_PIN),
+        .pin_bit_mask = jog_mask,
         .pull_down_en = 0,
         .pull_up_en = 1,
     };
-    gpio_config(&jog_conf);
+    if (jog_mask != 0) {
+        gpio_config(&jog_conf);
+    }
     
     // Configure pitch encoder pins
+    uint64_t pitch_mask = 0;
+    if (PIN_IS_VALID(PITCH_ENCODER_A_PIN)) pitch_mask |= (1ULL << PITCH_ENCODER_A_PIN);
+    if (PIN_IS_VALID(PITCH_ENCODER_B_PIN)) pitch_mask |= (1ULL << PITCH_ENCODER_B_PIN);
+
     gpio_config_t pitch_conf = {
         .intr_type = GPIO_INTR_DISABLE,
         .mode = GPIO_MODE_INPUT,
-        .pin_bit_mask = (1ULL << PITCH_ENCODER_A_PIN) | (1ULL << PITCH_ENCODER_B_PIN),
+        .pin_bit_mask = pitch_mask,
         .pull_down_en = 0,
         .pull_up_en = 1,
     };
-    gpio_config(&pitch_conf);
+    if (pitch_mask != 0) {
+        gpio_config(&pitch_conf);
+    }
     
     // Initialize state
     for (int i = 0; i < BUTTON_COUNT; i++) {
-        button_state[i] = !gpio_get_level(button_pins[i]); // Inverted (pull-up)
+        if (PIN_IS_VALID(button_pins[i])) {
+            button_state[i] = !gpio_get_level(button_pins[i]); // Inverted (pull-up)
+        } else {
+            button_state[i] = false;
+        }
         button_last_state[i] = button_state[i];
         button_last_change[i] = 0;
     }
     
-    jog_last_a = gpio_get_level(JOG_WHEEL_A_PIN);
-    jog_last_b = gpio_get_level(JOG_WHEEL_B_PIN);
-    pitch_last_a = gpio_get_level(PITCH_ENCODER_A_PIN);
-    pitch_last_b = gpio_get_level(PITCH_ENCODER_B_PIN);
+    jog_last_a = PIN_IS_VALID(JOG_WHEEL_A_PIN) ? gpio_get_level(JOG_WHEEL_A_PIN) : 0;
+    jog_last_b = PIN_IS_VALID(JOG_WHEEL_B_PIN) ? gpio_get_level(JOG_WHEEL_B_PIN) : 0;
+    pitch_last_a = PIN_IS_VALID(PITCH_ENCODER_A_PIN) ? gpio_get_level(PITCH_ENCODER_A_PIN) : 0;
+    pitch_last_b = PIN_IS_VALID(PITCH_ENCODER_B_PIN) ? gpio_get_level(PITCH_ENCODER_B_PIN) : 0;
     
     ESP_LOGI(TAG, "Controls initialized");
     return true;
@@ -134,6 +155,8 @@ void controls_update(void) {
     
     // Update buttons with debouncing
     for (int i = 0; i < BUTTON_COUNT; i++) {
+        if (!PIN_IS_VALID(button_pins[i])) continue;
+        
         bool current = !gpio_get_level(button_pins[i]); // Inverted
         
         if (current != button_last_state[i]) {
@@ -153,8 +176,8 @@ void controls_update(void) {
     }
     
     // Update jog wheel encoder (quadrature decoding)
-    int8_t jog_a = gpio_get_level(JOG_WHEEL_A_PIN);
-    int8_t jog_b = gpio_get_level(JOG_WHEEL_B_PIN);
+    int8_t jog_a = PIN_IS_VALID(JOG_WHEEL_A_PIN) ? gpio_get_level(JOG_WHEEL_A_PIN) : 0;
+    int8_t jog_b = PIN_IS_VALID(JOG_WHEEL_B_PIN) ? gpio_get_level(JOG_WHEEL_B_PIN) : 0;
     
     if (jog_a != jog_last_a || jog_b != jog_last_b) {
         // Quadrature decoding
@@ -176,8 +199,8 @@ void controls_update(void) {
     }
     
     // Update pitch encoder
-    int8_t pitch_a = gpio_get_level(PITCH_ENCODER_A_PIN);
-    int8_t pitch_b = gpio_get_level(PITCH_ENCODER_B_PIN);
+    int8_t pitch_a = PIN_IS_VALID(PITCH_ENCODER_A_PIN) ? gpio_get_level(PITCH_ENCODER_A_PIN) : 0;
+    int8_t pitch_b = PIN_IS_VALID(PITCH_ENCODER_B_PIN) ? gpio_get_level(PITCH_ENCODER_B_PIN) : 0;
     
     if (pitch_a != pitch_last_a || pitch_b != pitch_last_b) {
         int8_t state = (pitch_last_a << 1) | pitch_last_b;
@@ -211,6 +234,7 @@ int8_t controls_get_jog_delta(void) {
 }
 
 bool controls_get_jog_touch(void) {
+    if (!PIN_IS_VALID(JOG_WHEEL_TOUCH_PIN)) return false;
     return !gpio_get_level(JOG_WHEEL_TOUCH_PIN); // Inverted (pull-up)
 }
 

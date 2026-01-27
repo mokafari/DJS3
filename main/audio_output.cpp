@@ -1,6 +1,6 @@
 /**
  * @file audio_output.cpp
- * @brief Audio output implementation for onboard NS4168 audio chip via I2S
+ * @brief Audio output implementation for NS4168 or PCM5102A audio chip via I2S
  */
 
 #include "audio_output.h"
@@ -32,7 +32,12 @@ bool audio_output_init(void) {
     return false;
 #endif
 
-    ESP_LOGI(TAG, "Initializing I2S audio output for onboard NS4168 audio chip");
+    ESP_LOGI(TAG, "Initializing I2S audio output");
+#if defined(AUDIO_CHIP_NS4168) && AUDIO_CHIP_NS4168
+    ESP_LOGI(TAG, "  Chip: NS4168 (onboard)");
+#elif defined(AUDIO_CHIP_PCM5102A) && AUDIO_CHIP_PCM5102A
+    ESP_LOGI(TAG, "  Chip: PCM5102A (external)");
+#endif
     ESP_LOGI(TAG, "  BCLK: GPIO %d", I2S_BCLK_PIN);
     ESP_LOGI(TAG, "  LRCK: GPIO %d", I2S_LRCK_PIN);
     ESP_LOGI(TAG, "  DIN:  GPIO %d", I2S_DIN_PIN);
@@ -50,7 +55,7 @@ bool audio_output_init(void) {
         return false;
     }
 
-    // Configure pinout for onboard NS4168 audio chip
+    // Configure pinout (chip selection handled by board_config.h)
     if (!audio_i2s->SetPinout(I2S_BCLK_PIN, I2S_LRCK_PIN, I2S_DIN_PIN, I2S_MCLK_PIN)) {
         ESP_LOGE(TAG, "Failed to set I2S pinout");
         delete audio_i2s;

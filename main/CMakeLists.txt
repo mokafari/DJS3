@@ -1,7 +1,7 @@
 idf_component_register(
     SRCS "main.c" "audio_output.cpp" "usb_host.c" "sd_card.c" "storage.c" "audio_player.cpp" "controls.c" "pitch_control.c" "cue_points.c" "loop_control.c" "display.c" "waveform.c" "track_db.c" "id3_parser.c"
     INCLUDE_DIRS "include"
-    REQUIRES driver nvs_flash esp_psram esp8266audio fatfs usb ui
+    REQUIRES driver nvs_flash esp_psram esp8266audio fatfs usb ui timestretch
 )
 
 # Set C standard

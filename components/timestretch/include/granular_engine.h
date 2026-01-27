@@ -40,6 +40,14 @@ typedef enum {
 } granular_window_t;
 
 /**
+ * @brief Granular engine mode
+ */
+typedef enum {
+    GRANULAR_MODE_MULTI_GRAIN = 0,  ///< Multi-grain synthesis mode (existing)
+    GRANULAR_MODE_STREAMING          ///< Simple grain loop streaming mode (as per spec)
+} granular_mode_t;
+
+/**
  * @brief Granular engine parameters
  */
 typedef struct {
@@ -77,6 +85,17 @@ typedef struct {
 } granular_state_t;
 
 /**
+ * @brief Streaming mode state (for simple grain loop)
+ */
+typedef struct {
+    double read_index;        ///< Current read position (granular head)
+    double grain_start;       ///< Current grain start position
+    float speed;              ///< Playback speed (0.0 = freeze, 1.0 = normal)
+    float grain_size_samples; ///< Grain size in samples
+    float jitter_amount;     ///< Jitter amount (0.0 = none)
+} streaming_state_t;
+
+/**
  * @brief Granular engine handle
  */
 typedef struct granular_engine_s {
@@ -86,6 +105,11 @@ typedef struct granular_engine_s {
     
     granular_params_t params;  ///< Current parameters
     granular_state_t state;    ///< Current state
+    
+    // Streaming mode
+    granular_mode_t mode;       ///< Current mode (multi-grain or streaming)
+    int32_t write_index;       ///< Write head position (where MP3 decoder writes)
+    streaming_state_t streaming; ///< Streaming mode state
     
     // Beat sync
     float bpm;                 ///< Master BPM
@@ -192,6 +216,65 @@ float granular_window_value(granular_window_t window, float position);
  * @return Number of active grains
  */
 uint32_t granular_engine_get_active_grain_count(const granular_engine_t *engine);
+
+/**
+ * @brief Set granular engine mode (multi-grain or streaming)
+ * 
+ * @param engine Engine handle
+ * @param mode Mode to use
+ */
+void granular_engine_set_mode(granular_engine_t *engine, granular_mode_t mode);
+
+/**
+ * @brief Write chunk of decoded audio to buffer (for streaming mode)
+ * 
+ * @param engine Engine handle
+ * @param data Audio data (stereo interleaved, 16-bit)
+ * @param samples Number of samples to write (mono samples, so stereo = samples*2)
+ * @return Number of samples written
+ */
+size_t granular_engine_write_chunk(granular_engine_t *engine, const int16_t *data, size_t samples);
+
+/**
+ * @brief Get current write index (for buffer distance checking)
+ * 
+ * @param engine Engine handle
+ * @return Write index in samples
+ */
+int32_t granular_engine_get_write_index(const granular_engine_t *engine);
+
+/**
+ * @brief Get current read index (for buffer distance checking)
+ * 
+ * @param engine Engine handle
+ * @return Read index in samples
+ */
+int32_t granular_engine_get_read_index(const granular_engine_t *engine);
+
+/**
+ * @brief Check buffer distance and determine if decoder should pause/resume
+ * 
+ * @param engine Engine handle
+ * @param loop_limit Maximum distance before pausing (in samples)
+ * @param refill_threshold Minimum distance before resuming (in samples)
+ * @return true if decoder should pause, false if should resume/continue
+ */
+bool granular_engine_check_buffer_distance(const granular_engine_t *engine, 
+                                          int32_t loop_limit, 
+                                          int32_t refill_threshold);
+
+/**
+ * @brief Set streaming mode parameters (speed, grain size, jitter)
+ * 
+ * @param engine Engine handle
+ * @param speed Playback speed (0.0 = freeze, 1.0 = normal, >1.0 = faster)
+ * @param grain_size_samples Grain size in samples
+ * @param jitter Jitter amount (0.0 = none)
+ */
+void granular_engine_set_streaming_params(granular_engine_t *engine, 
+                                         float speed, 
+                                         float grain_size_samples, 
+                                         float jitter);
 
 #ifdef __cplusplus
 }

@@ -28,7 +28,7 @@ static uint16_t *framebuffer = NULL;
 static bool display_initialized = false;
 
 // QSPI protocol constants (matching Arduino_ESP32QSPI)
-#define QSPI_FREQUENCY 80000000  // 80MHz
+#define QSPI_FREQUENCY 32000000  // 32MHz (lowered from 80MHz for stability)
 #define QSPI_SPI_MODE 0  // SPI_MODE0 = 0
 #define QSPI_SPI_HOST SPI2_HOST
 #define QSPI_DMA_CHANNEL SPI_DMA_CH_AUTO
@@ -60,6 +60,8 @@ static inline void CS_HIGH(void) {
 #define NV3041A_NOP             0x00
 #define NV3041A_SWRESET         0x01
 #define NV3041A_SLPOUT          0x11
+#define NV3041A_INVOFF          0x20
+#define NV3041A_INVON           0x21
 #define NV3041A_DISPON          0x29
 #define NV3041A_CASET           0x2A
 #define NV3041A_RASET           0x2B
@@ -88,7 +90,7 @@ static const uint8_t nv3041a_init_operations[] = {
     BEGIN_WRITE,
     WRITE_C8_D8, 0xff, 0xa5,  // Unlock sequence
     
-    WRITE_C8_D8, 0x36, 0xc0,  // MADCTL: Memory access control
+    WRITE_C8_D8, 0x36, 0xc0,  // MADCTL: Memory access control (0xc0 for RGB)
     
     WRITE_C8_D8, 0x3A, 0x01,  // COLMOD: Pixel format (01=RGB565, 00=RGB666)
     
@@ -193,16 +195,25 @@ static const uint8_t nv3041a_init_operations[] = {
     WRITE_C8_D8, 0xB2, 0x16,  // gam_PKN10
     
     WRITE_C8_D8, 0xff, 0x00,  // Lock sequence
-    WRITE_C8_D8, 0x11, 0x00,  // SLPOUT (Sleep Out)
+    WRITE_C8_D8, 0x11, 0x00,  // SLPOUT (Sleep Out) - Event ①
     END_WRITE,
     
-    DELAY, 120,  // Wait 120ms after SLPOUT
+    // CRITICAL: Power-on sequence timing per datasheet:
+    // Event ②: VGL stabilization: 23ms (min)
+    // Event ③: AVDD stabilization: 30.7ms (min)
+    // Event ④: AVCL/VGH stabilization: 40.8ms (min)
+    // Event ⑤: Gamma enable: 55.3ms (min)
+    // We wait 120ms to ensure all power rails and gamma are stable before DISPON
+    DELAY, 120,  // Wait 120ms after SLPOUT (exceeds 55.3ms minimum for Gamma enable)
     
     BEGIN_WRITE,
-    WRITE_C8_D8, 0x29, 0x00,  // DISPON (Display On)
+    WRITE_C8_D8, 0x29, 0x00,  // DISPON (Display On) - Event ⑥: Source output enable
     END_WRITE,
     
-    DELAY, 100   // Wait 100ms after DISPON
+    // CRITICAL: After DISPON, wait for Source output to fully stabilize
+    // Datasheet doesn't specify minimum, but display needs time to become ready for pixel data
+    // Increased delay to prevent RGB noise (continuous resets help because they give more stabilization time)
+    DELAY, 200   // Wait 200ms after DISPON for Source output stabilization (increased from 150ms)
 };
 
 // Transaction structure for QSPI protocol
@@ -334,41 +345,24 @@ void display_send_data_batch(const uint16_t *data, size_t count) {
                                      SPI_TRANS_VARIABLE_ADDR | SPI_TRANS_VARIABLE_DUMMY;
         }
         
-        // Pack pixels into 32-bit words for QSPI protocol
-        // CRITICAL: With LV_COLOR_16_SWAP=1, LVGL gives us swapped pixels.
-        // Arduino Canvas uses draw16bitBeRGBBitmap which un-swaps pixels (MSB_16_SET) before storing in framebuffer.
-        // Then writePixels receives non-swapped pixels and uses MSB_32_16_16_SET to swap for QSPI.
-        // However, MSB_32_16_16_SET expects non-swapped pixels and swaps them for QSPI.
-        // So we need to un-swap first (like draw16bitBeRGBBitmap), then use MSB_32_16_16_SET.
-        // BUT: We also need to reverse the byte order of the 32-bit word for QSPI (MSB-first).
+        // Use MSB_32_16_16_SET on pixels (matching Arduino writePixels exactly)
+        // Note: With LV_COLOR_16_SWAP=1, p1_raw is already in a state where MSB_32_16_16_SET 
+        // puts the correct bytes in order.
         size_t l2 = chunk_pixels >> 1;
         for (size_t i = 0; i < l2; ++i) {
-            uint16_t p1_raw = *ptr++;
-            uint16_t p2_raw = *ptr++;
+            uint16_t p1 = *ptr++;
+            uint16_t p2 = *ptr++;
             
-            // Un-swap bytes (like Arduino's draw16bitBeRGBBitmap does)
-            uint16_t p1 = MSB_16(p1_raw);
-            uint16_t p2 = MSB_16(p2_raw);
-            
-            // Use MSB_32_16_16_SET on non-swapped pixels (matching Arduino writePixels)
-            uint32_t packed;
-            MSB_32_16_16_SET(packed, p1, p2);
-            
-            // Reverse byte order for QSPI (MSB-first transmission)
-            // ESP32 SPI sends bytes in little-endian order, but QSPI expects MSB-first
-            pixel_buffer.buffer32[i] = __builtin_bswap32(packed);
+            MSB_32_16_16_SET(pixel_buffer.buffer32[i], p1, p2);
             
             // Debug: Log first few pixel packs
             if (spi_logging_enabled && spi_log_count < SPI_LOG_MAX && i == 0) {
-                ESP_LOGI(TAG, "SPI[%d] Pack: p1_raw=0x%04X, p2_raw=0x%04X -> p1=0x%04X, p2=0x%04X -> packed=0x%08X -> swapped=0x%08X", 
-                         spi_log_count, p1_raw, p2_raw, p1, p2, packed, pixel_buffer.buffer32[i]);
+                ESP_LOGI(TAG, "SPI[%d] Pack: p1=0x%04X, p2=0x%04X -> 32bit=0x%08X", 
+                         spi_log_count, p1, p2, pixel_buffer.buffer32[i]);
             }
         }
         if (chunk_pixels & 1) {
-            uint16_t p1_raw = *ptr++;
-            // Un-swap bytes first (like Arduino's draw16bitBeRGBBitmap)
-            uint16_t p1 = MSB_16(p1_raw);
-            // Then swap for QSPI (matching Arduino writePixels)
+            uint16_t p1 = *ptr++;
             MSB_16_SET(pixel_buffer.buffer16[chunk_pixels - 1], p1);
         }
         
@@ -440,21 +434,21 @@ static esp_err_t display_spi_init(void) {
     gpio_set_level(DISPLAY_CS_PIN, 1); // CS high (inactive)
     
     // Setup CS pin mask and port registers for fast GPIO access
-    if (DISPLAY_CS_PIN >= 32) {
-        cs_pin_mask = (1ULL << (DISPLAY_CS_PIN - 32));
-        cs_port_set = (volatile uint32_t*)GPIO_OUT1_W1TS_REG;
-        cs_port_clr = (volatile uint32_t*)GPIO_OUT1_W1TC_REG;
-    } else {
-        cs_pin_mask = (1ULL << DISPLAY_CS_PIN);
-        cs_port_set = (volatile uint32_t*)GPIO_OUT_W1TS_REG;
-        cs_port_clr = (volatile uint32_t*)GPIO_OUT_W1TC_REG;
-    }
+#if DISPLAY_CS_PIN >= 32
+    cs_pin_mask = (1ULL << (DISPLAY_CS_PIN - 32));
+    cs_port_set = (volatile uint32_t*)GPIO_OUT1_W1TS_REG;
+    cs_port_clr = (volatile uint32_t*)GPIO_OUT1_W1TC_REG;
+#else
+    cs_pin_mask = (1ULL << DISPLAY_CS_PIN);
+    cs_port_set = (volatile uint32_t*)GPIO_OUT_W1TS_REG;
+    cs_port_clr = (volatile uint32_t*)GPIO_OUT_W1TC_REG;
+#endif
     
     // Configure SPI bus for QSPI (4-bit parallel)
     // QSPI requires quadwp (D2) and quadhd (D3) pins for 4-bit mode
     spi_bus_config_t bus_cfg = {
         .mosi_io_num = DISPLAY_D0_PIN,      // D0 (MOSI)
-        .miso_io_num = -1,                  // Not used for display
+        .miso_io_num = DISPLAY_D1_PIN,      // D1 (MISO)
         .sclk_io_num = DISPLAY_SCK_PIN,     // Clock
         .quadwp_io_num = DISPLAY_D2_PIN,    // D2 (WP - Write Protect for QSPI)
         .quadhd_io_num = DISPLAY_D3_PIN,    // D3 (HD - Hold for QSPI)
@@ -469,6 +463,7 @@ static esp_err_t display_spi_init(void) {
     
     ESP_LOGI(TAG, "QSPI pin configuration:");
     ESP_LOGI(TAG, "  D0 (MOSI): GPIO %d", DISPLAY_D0_PIN);
+    ESP_LOGI(TAG, "  D1 (MISO): GPIO %d", DISPLAY_D1_PIN);
     ESP_LOGI(TAG, "  D2 (WP):   GPIO %d", DISPLAY_D2_PIN);
     ESP_LOGI(TAG, "  D3 (HD):   GPIO %d", DISPLAY_D3_PIN);
     ESP_LOGI(TAG, "  SCK:       GPIO %d", DISPLAY_SCK_PIN);
@@ -620,6 +615,20 @@ static esp_err_t display_controller_init(void) {
     // Process full initialization sequence
     ESP_LOGI(TAG, "Processing full initialization sequence (%zu bytes)...", sizeof(nv3041a_init_operations));
     display_process_init_sequence(nv3041a_init_operations, sizeof(nv3041a_init_operations));
+    
+    // Explicitly turn on display inversion (fix white background)
+    // If background is still white, this might need to be switched to INVOFF (0x20)
+    ESP_LOGI(TAG, "Setting display inversion ON...");
+    display_send_cmd(NV3041A_INVON);
+    
+    // CRITICAL: Add additional stabilization delay after DISPON
+    // Per datasheet power-on sequence:
+    // - Event ⑥ (DISPON) enables Source output
+    // - Display needs time to fully stabilize before accepting pixel data
+    // - Continuous resets help because they give more time for stabilization
+    // - We already have 200ms delay in the init sequence, but add extra margin
+    ESP_LOGI(TAG, "Waiting for display Source output to stabilize after DISPON...");
+    vTaskDelay(pdMS_TO_TICKS(100)); // Additional 100ms stabilization delay (total 300ms after DISPON)
     
     ESP_LOGI(TAG, "Display controller initialization complete");
     return ESP_OK;

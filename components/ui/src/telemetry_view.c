@@ -30,7 +30,7 @@ void telemetry_view_init(uint32_t width, uint32_t height) {
     ESP_LOGI(TAG, "Telemetry view initialized: %ux%u", width, height);
     
     view_width = width;
-    view_height = height * TELEMETRY_HEIGHT_PCT / 100;
+    view_height = 40; // Fixed height for bottom telemetry bar
     
     // Create container (bottom zone)
     telemetry_container = lv_obj_create(lv_scr_act());
@@ -43,34 +43,30 @@ void telemetry_view_init(uint32_t width, uint32_t height) {
     
     lv_style_t *style_phosphor = hud_theme_get_phosphor_style();
     
-    // BPM label (left side, huge)
+    // BPM label (left side)
     bpm_label = lv_label_create(telemetry_container);
-    lv_obj_set_style_text_font(bpm_label, &lv_font_montserrat_14, 0); // Use available font
+    // Use large font if available, otherwise default
+    // lv_obj_set_style_text_font(bpm_label, &lv_font_montserrat_28, 0); 
     lv_obj_add_style(bpm_label, style_phosphor, 0);
     lv_label_set_text(bpm_label, "124.0");
-    lv_obj_set_pos(bpm_label, 20, view_height / 2 - 24);
-    lv_obj_set_style_text_align(bpm_label, LV_TEXT_ALIGN_LEFT, 0);
+    lv_obj_align(bpm_label, LV_ALIGN_LEFT_MID, 10, 0);
     
-    // Pitch label (right side, huge)
+    // Pitch label (right side)
     pitch_label = lv_label_create(telemetry_container);
-    lv_obj_set_style_text_font(pitch_label, &lv_font_montserrat_14, 0); // Use available font
     lv_obj_add_style(pitch_label, style_phosphor, 0);
-    lv_label_set_text(pitch_label, "+0.80%");
-    lv_obj_set_pos(pitch_label, view_width - 200, view_height / 2 - 24);
-    lv_obj_set_style_text_align(pitch_label, LV_TEXT_ALIGN_RIGHT, 0);
+    lv_label_set_text(pitch_label, "+0.00%");
+    lv_obj_align(pitch_label, LV_ALIGN_RIGHT_MID, -10, 0);
     
     // Phase error bar (center)
-    int bar_width = view_width / 3;
-    int bar_height = 8;
-    int bar_x = (view_width - bar_width) / 2;
-    int bar_y = view_height / 2 - bar_height / 2;
+    int bar_width = 120;
+    int bar_height = 6;
     
     // Background bar
     phase_bar_bg = lv_obj_create(telemetry_container);
     lv_obj_set_size(phase_bar_bg, bar_width, bar_height);
-    lv_obj_set_pos(phase_bar_bg, bar_x, bar_y);
-    lv_obj_set_style_bg_color(phase_bar_bg, lv_color_white(), 0);
-    lv_obj_set_style_bg_opa(phase_bar_bg, LV_OPA_20, 0);
+    lv_obj_align(phase_bar_bg, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_style_bg_color(phase_bar_bg, hud_theme_get_foreground_color(), 0);
+    lv_obj_set_style_bg_opa(phase_bar_bg, LV_OPA_30, 0); // Dim background
     lv_obj_set_style_border_width(phase_bar_bg, 1, 0);
     lv_obj_set_style_border_color(phase_bar_bg, hud_theme_get_foreground_color(), 0);
     lv_obj_set_style_radius(phase_bar_bg, 0, 0);
@@ -78,17 +74,17 @@ void telemetry_view_init(uint32_t width, uint32_t height) {
     
     // Phase indicator (center marker)
     phase_indicator = lv_obj_create(telemetry_container);
-    lv_obj_set_size(phase_indicator, 2, bar_height + 4);
-    lv_obj_set_pos(phase_indicator, bar_x + bar_width / 2 - 1, bar_y - 2);
+    lv_obj_set_size(phase_indicator, 2, bar_height + 6);
+    lv_obj_align(phase_indicator, LV_ALIGN_CENTER, 0, 0);
     lv_obj_set_style_bg_color(phase_indicator, hud_theme_get_foreground_color(), 0);
     lv_obj_set_style_bg_opa(phase_indicator, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(phase_indicator, 0, 0);
     lv_obj_clear_flag(phase_indicator, LV_OBJ_FLAG_CLICKABLE);
     
-    // Phase error bar (fills left or right)
+    // Phase error bar (dynamic fill)
     phase_bar = lv_obj_create(telemetry_container);
     lv_obj_set_size(phase_bar, 0, bar_height);
-    lv_obj_set_pos(phase_bar, bar_x + bar_width / 2, bar_y);
+    lv_obj_align(phase_bar, LV_ALIGN_CENTER, 0, 0); // Will be re-positioned in update
     lv_obj_set_style_bg_color(phase_bar, hud_theme_get_foreground_color(), 0);
     lv_obj_set_style_bg_opa(phase_bar, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(phase_bar, 0, 0);

@@ -32,7 +32,7 @@ void metadata_view_init(uint32_t width, uint32_t height) {
     ESP_LOGI(TAG, "Metadata view initialized: %ux%u", width, height);
     
     view_width = width;
-    view_height = height * METADATA_HEIGHT_PCT / 100;
+    view_height = 30; // Fixed height for top metadata bar
     
     // Create container (top zone)
     metadata_container = lv_obj_create(lv_scr_act());
@@ -47,29 +47,24 @@ void metadata_view_init(uint32_t width, uint32_t height) {
     
     // Track title (scrolling marquee, left side)
     title_label = lv_label_create(metadata_container);
-    lv_obj_set_style_text_font(title_label, &lv_font_montserrat_14, 0); // Use available font
     lv_obj_add_style(title_label, style_phosphor, 0);
     lv_label_set_text(title_label, "Track Title");
-    lv_obj_set_pos(title_label, 10, view_height / 2 - 9);
-    lv_obj_set_style_text_align(title_label, LV_TEXT_ALIGN_LEFT, 0);
+    lv_obj_align(title_label, LV_ALIGN_LEFT_MID, 10, 0);
     lv_label_set_long_mode(title_label, LV_LABEL_LONG_SCROLL_CIRCULAR);
-    lv_obj_set_width(title_label, view_width * 60 / 100);
-    
-    // Key (Camelot notation, center)
-    key_label = lv_label_create(metadata_container);
-    lv_obj_set_style_text_font(key_label, &lv_font_montserrat_14, 0); // Use available font
-    lv_obj_add_style(key_label, style_phosphor, 0);
-    lv_label_set_text(key_label, "4A");
-    lv_obj_set_pos(key_label, view_width / 2 - 20, view_height / 2 - 12);
-    lv_obj_set_style_text_align(key_label, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_width(title_label, view_width * 55 / 100);
     
     // Time remaining (right side)
     time_label = lv_label_create(metadata_container);
-    lv_obj_set_style_text_font(time_label, &lv_font_montserrat_14, 0); // Use available font
     lv_obj_add_style(time_label, style_phosphor, 0);
-    lv_label_set_text(time_label, "-03:45");
-    lv_obj_set_pos(time_label, view_width - 100, view_height / 2 - 9);
-    lv_obj_set_style_text_align(time_label, LV_TEXT_ALIGN_RIGHT, 0);
+    lv_label_set_text(time_label, "-00:00");
+    lv_obj_align(time_label, LV_ALIGN_RIGHT_MID, -10, 0);
+    
+    // Key (Camelot notation, center right)
+    key_label = lv_label_create(metadata_container);
+    lv_obj_add_style(key_label, style_phosphor, 0);
+    lv_label_set_text(key_label, "4A");
+    // Position it to the left of the time label
+    lv_obj_align_to(key_label, time_label, LV_ALIGN_OUT_LEFT_MID, -15, 0);
     
     // Invalidate to trigger initial redraw
     lv_obj_invalidate(metadata_container);

@@ -367,7 +367,7 @@ void app_main(void)
               ESP_LOGI(TAG, "Display init complete");
               
               // Enable SPI logging for debugging
-              display_enable_spi_logging(true);
+              display_enable_spi_logging(false);
               
               // Run byte-order test
               display_test_byte_order();

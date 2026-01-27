@@ -33,7 +33,7 @@ except ImportError:
 # Configuration
 PROJECT_DIR = Path(__file__).parent.absolute()
 IDF_PATH = Path("/Users/gustav/.espressif/v5.5.2/esp-idf")
-SERIAL_PORT = "/dev/cu.usbmodem101"
+SERIAL_PORT = "/dev/cu.usbmodem2101"
 BAUD_RATE = 115200
 
 # Colors for terminal output

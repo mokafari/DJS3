@@ -148,8 +148,15 @@ void waveform_view_init(uint32_t width, uint32_t height) {
     ESP_LOGI(TAG, "Waveform view initialized: %ux%u", width, height);
     
     view_width = width;
-    view_height = height * 50 / 100; // Zone A: 50% height
-    waveform_height = view_height;
+    
+    // Calculate available height: Total - Top Bar (30) - Bottom Bar (40)
+    int top_bar_height = 30;
+    int bottom_bar_height = 40;
+    int available_height = height - top_bar_height - bottom_bar_height;
+    
+    // Use 80% of available height for the actual waveform, centered
+    view_height = available_height; 
+    waveform_height = view_height * 80 / 100;
     
     // Allocate history buffers (try INTERNAL RAM first, like Arduino example)
     for (int i = 0; i < GHOST_FRAMES; i++) {
@@ -184,7 +191,7 @@ void waveform_view_init(uint32_t width, uint32_t height) {
     // Create container
     waveform_container = lv_obj_create(lv_scr_act());
     lv_obj_set_size(waveform_container, view_width, view_height);
-    lv_obj_set_pos(waveform_container, 0, height * 20 / 100); // Below metadata zone
+    lv_obj_set_pos(waveform_container, 0, top_bar_height); 
     lv_obj_set_style_bg_color(waveform_container, lv_color_black(), 0);
     lv_obj_set_style_border_width(waveform_container, 0, 0);
     lv_obj_set_style_pad_all(waveform_container, 0, 0);
@@ -208,7 +215,19 @@ void waveform_view_init(uint32_t width, uint32_t height) {
     );
     
     if (!canvas_buf) {
-        ESP_LOGW(TAG, "Internal RAM allocation failed, skipping PSRAM allocation to avoid watchdog reset");
+        ESP_LOGW(TAG, "Internal RAM allocation failed, trying PSRAM...");
+        // Fall back to PSRAM
+        canvas_buf = heap_caps_malloc(
+            canvas_buf_size,
+            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT
+        );
+    }
+    
+    // Yield to prevent watchdog timeout during heavy allocation
+    vTaskDelay(pdMS_TO_TICKS(10));
+    
+    if (!canvas_buf) {
+        ESP_LOGE(TAG, "Failed to allocate canvas buffer");
         ESP_LOGW(TAG, "Waveform view will be disabled (canvas requires buffer)");
         // Destroy canvas if we can't allocate buffer (canvas requires buffer)
         lv_obj_del(waveform_canvas);
@@ -219,6 +238,8 @@ void waveform_view_init(uint32_t width, uint32_t height) {
             view_width, view_height, LV_IMG_CF_TRUE_COLOR);
         lv_obj_set_size(waveform_canvas, view_width, view_height);
         lv_obj_set_pos(waveform_canvas, 0, 0);
+        // Clear canvas initially
+        lv_canvas_fill_bg(waveform_canvas, lv_color_black(), LV_OPA_COVER);
     }
     
     // Create playhead line (center vertical line)
