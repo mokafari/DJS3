@@ -402,10 +402,37 @@ void app_main(void)
     } else {
         ESP_LOGI(TAG, "Track database init complete");
         
-        // Scan for tracks
-        ESP_LOGI(TAG, "Scanning for MP3 tracks...");
-        uint32_t track_count = track_db_scan();
-        ESP_LOGI(TAG, "Found %d tracks", track_count);
+            // Scan for tracks
+            ESP_LOGI(TAG, "Scanning for MP3 tracks...");
+            uint32_t track_count = track_db_scan();
+            ESP_LOGI(TAG, "Found %lu tracks", track_count);
+            
+            // Auto-play first track if available
+            if (track_count > 0) {
+                track_info_t info;
+                if (track_db_get_track(0, &info)) {
+                    ESP_LOGI(TAG, "Auto-playing first track: %s", info.filename);
+                    
+                    // Build full path (assuming storage mount point is known, usually /sdcard)
+                    // track_db stores relative path or filename, ensure we have full path
+                    // The track_db_scan implementation stores the filename relative to the scan root
+                    // But audio_player_load needs a full path if not handled internally
+                    // Let's assume the track_info contains the filename relative to root, 
+                    // so we prepend /sdcard/ if needed.
+                    // Wait, track_db stores just filename. We need to construct path.
+                    
+                    static char full_path[512];
+                    snprintf(full_path, sizeof(full_path), "/%s", info.filename);
+                    
+                    if (audio_player_load(full_path)) {
+                        audio_player_play();
+                    } else {
+                        ESP_LOGE(TAG, "Failed to load auto-play track");
+                    }
+                }
+            } else {
+                ESP_LOGW(TAG, "No tracks found to auto-play");
+            }
     }
 
     ESP_LOGI(TAG, "========================================");

@@ -89,9 +89,15 @@ bool controls_init(button_event_cb_t button_cb, void *arg) {
     
     // Configure jog wheel encoder pins
     uint64_t jog_mask = 0;
-    if (PIN_IS_VALID(JOG_WHEEL_A_PIN)) jog_mask |= (1ULL << JOG_WHEEL_A_PIN);
-    if (PIN_IS_VALID(JOG_WHEEL_B_PIN)) jog_mask |= (1ULL << JOG_WHEEL_B_PIN);
-    if (PIN_IS_VALID(JOG_WHEEL_TOUCH_PIN)) jog_mask |= (1ULL << JOG_WHEEL_TOUCH_PIN);
+#if JOG_WHEEL_A_PIN >= 0
+    jog_mask |= (1ULL << JOG_WHEEL_A_PIN);
+#endif
+#if JOG_WHEEL_B_PIN >= 0
+    jog_mask |= (1ULL << JOG_WHEEL_B_PIN);
+#endif
+#if JOG_WHEEL_TOUCH_PIN >= 0
+    jog_mask |= (1ULL << JOG_WHEEL_TOUCH_PIN);
+#endif
 
     gpio_config_t jog_conf = {
         .intr_type = GPIO_INTR_DISABLE,
@@ -106,8 +112,12 @@ bool controls_init(button_event_cb_t button_cb, void *arg) {
     
     // Configure pitch encoder pins
     uint64_t pitch_mask = 0;
-    if (PIN_IS_VALID(PITCH_ENCODER_A_PIN)) pitch_mask |= (1ULL << PITCH_ENCODER_A_PIN);
-    if (PIN_IS_VALID(PITCH_ENCODER_B_PIN)) pitch_mask |= (1ULL << PITCH_ENCODER_B_PIN);
+#if PITCH_ENCODER_A_PIN >= 0
+    pitch_mask |= (1ULL << PITCH_ENCODER_A_PIN);
+#endif
+#if PITCH_ENCODER_B_PIN >= 0
+    pitch_mask |= (1ULL << PITCH_ENCODER_B_PIN);
+#endif
 
     gpio_config_t pitch_conf = {
         .intr_type = GPIO_INTR_DISABLE,

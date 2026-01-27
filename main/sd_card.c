@@ -54,6 +54,12 @@ bool sd_card_init(void) {
     gpio_set_level(SD_CS_PIN, 1); // Set CS high (inactive)
     ESP_LOGI(TAG, "CS pin configured: GPIO %d (pull-up enabled)", SD_CS_PIN);
     
+    // Enable internal pull-ups for SPI lines (MISO is critical)
+    gpio_set_pull_mode(SD_MISO_PIN, GPIO_PULLUP_ONLY);
+    gpio_set_pull_mode(SD_MOSI_PIN, GPIO_PULLUP_ONLY);
+    gpio_set_pull_mode(SD_SCK_PIN, GPIO_PULLUP_ONLY);
+    ESP_LOGI(TAG, "Enabled internal pull-ups for MISO/MOSI/SCK");
+    
     // Ensure touch controller CS is held high during SD card initialization
     // Touch controller CS is GPIO 38 (TOUCH_RES from pinout)
     // This prevents bus conflicts during SD card initialization

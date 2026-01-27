@@ -1,25 +1,6 @@
 /**
  * @file board_config.h
- * @brief Board pin configuration for JC4827W543 ESP32-S3
- * 
- * This file contains all GPIO pin definitions for the JC4827W543 board:
- * - Display (NV3041A QSPI)
- * - Touch controller (XPT2046 or GT911)
- * - Backlight control
- * - Other peripherals
- * 
- * PIN CONFLICT CHECK (as of latest update):
- * - GPIO 4: BUTTON_PLAY_PAUSE (OK - GT911 SCL only if capacitive touch used)
- * - GPIO 5: BUTTON_HOT_CUE_1 (moved from GPIO 10 to avoid SD card CS conflict)
- * - GPIO 8: Available (GT911 SDA only if capacitive touch used, we use XPT2046)
- * - GPIO 10: SD_CS_PIN (TF_CS from pinout - SD card Chip Select)
- * - GPIO 11: SD_MISO_PIN (TF_MISO/RTP_DIN - shared with touch controller)
- * - GPIO 12: SD_SCK_PIN (TF_CLK/RTP_CLK - shared with touch controller)
- * - GPIO 13: SD_MOSI_PIN (TF_MOSI/RTP_DIO - shared with touch controller)
- * - GPIO 19: USB_DM (OK - no conflicts)
- * - GPIO 20: USB_DP (OK - no conflicts)
- * - GPIO 35: INPUT-ONLY - Cannot be used for SPI MISO!
- * - GPIO 36: JOG_WHEEL_B (OK - no conflicts)
+ * @brief Board pin configuration for JC4827W543 ESP32-S3 aligned with official pinout
  */
 
 #ifndef BOARD_CONFIG_H
@@ -45,193 +26,112 @@ extern "C" {
  * Display Configuration (NV3041A)
  * ============================================================================ */
 
-// Uncomment to disable display initialization (useful if display is not connected or causes issues)
-// #define DISPLAY_DISABLE
-
 #define SCREEN_WIDTH              480
 #define SCREEN_HEIGHT             272
 #define SCREEN_BPP                16  // RGB565
 
-/* Display QSPI Pins (4-bit parallel) - Verified from reference */
-#define DISPLAY_CS_PIN            45  // Chip Select
-#define DISPLAY_SCK_PIN           47  // Serial Clock
-#define DISPLAY_D0_PIN            21  // Data bit 0
-#define DISPLAY_D1_PIN            48  // Data bit 1
-#define DISPLAY_D2_PIN            40  // Data bit 2
-#define DISPLAY_D3_PIN            39  // Data bit 3
-#define DISPLAY_RST_PIN           (-1) // Not used (GFX_NOT_DEFINED)
+/* Display QSPI Pins (4-bit parallel) - Verified from PDF */
+#define DISPLAY_CS_PIN            45  // LCD_CS
+#define DISPLAY_SCK_PIN           47  // LCD_CLK
+#define DISPLAY_D0_PIN            21  // LCD_D0
+#define DISPLAY_D1_PIN            48  // LCD_D1
+#define DISPLAY_D2_PIN            40  // LCD_D2
+#define DISPLAY_D3_PIN            39  // LCD_D3
+#define DISPLAY_RST_PIN           (-1) // Not used
+#define DISPLAY_TE_PIN            0    // LCD_TE
 
 /* Display Backlight */
-#define DISPLAY_BL_PIN            1   // Backlight PWM (LEDC)
+#define DISPLAY_BL_PIN            1   // LCD_BL (LEDC PWM)
 
 /* ============================================================================
  * Touch Controller Configuration
  * ============================================================================ */
 
-/* Touch Controller Selection */
-/* Uncomment one of the following: */
-#define TOUCH_XPT2046             1   // Resistive touch (XPT2046)
-// #define TOUCH_GT911              1   // Capacitive touch (GT911)
+/* The board uses GT911 (Capacitive) according to PDF pinout (SCL/SDA) */
+#define TOUCH_GT911               1
 
-#if defined(TOUCH_XPT2046) && TOUCH_XPT2046
-
-/* XPT2046 Resistive Touch Pins (SPI) - Verified from reference */
-#define TOUCH_SCK_PIN             12  // SPI Clock
-#define TOUCH_MISO_PIN            13  // SPI MISO
-#define TOUCH_MOSI_PIN            11  // SPI MOSI
-#define TOUCH_CS_PIN              38  // Chip Select
-#define TOUCH_INT_PIN             3   // Interrupt
-#define TOUCH_SAMPLES             50  // Number of samples for averaging
-
-/* Touch Calibration (from Arduino_GFX TouchCalibration example) */
-#define TOUCH_SWAP_XY             false
-#define TOUCH_MAP_X1              230
-#define TOUCH_MAP_X2              3860
-#define TOUCH_MAP_Y1              3750
-#define TOUCH_MAP_Y2              290
-
-#elif defined(TOUCH_GT911) && TOUCH_GT911
-
-/* GT911 Capacitive Touch Pins (I2C) - Verified from reference */
-#define TOUCH_SCL_PIN             4   // I2C Clock (CONFLICTS with BUTTON_PLAY_PAUSE if both enabled!)
-#define TOUCH_SDA_PIN             8   // I2C Data (CONFLICTS with SD_MOSI if both enabled!)
-#define TOUCH_RES_PIN             38  // Reset
-#define TOUCH_INT_PIN             3   // Interrupt
-#define TOUCH_I2C_ADDR            0x5D  // GT911_SLAVE_ADDRESS1
-
+#if defined(TOUCH_GT911) && TOUCH_GT911
+#define TOUCH_SCL_PIN             4   // TOUCH_SCL
+#define TOUCH_SDA_PIN             8   // TOUCH_SDA
+#define TOUCH_RES_PIN             38  // TOUCH_RES
+#define TOUCH_INT_PIN             3   // TOUCH_INT
+#define TOUCH_I2C_ADDR            0x5D
 #endif
 
 /* ============================================================================
- * DJ Controls Configuration
+ * Audio Configuration (I2S)
  * ============================================================================ */
 
-/* Button Pins */
-#define BUTTON_CUE_PIN            2   // Cue button
-#define BUTTON_PLAY_PAUSE_PIN     4   // Play/Pause button (CONFLICTS with GT911 SCL if capacitive touch enabled)
-#define BUTTON_SYNC_PIN           6   // Sync button
-#define BUTTON_LOOP_IN_PIN        7   // Loop In button
-#define BUTTON_LOOP_OUT_PIN       9   // Loop Out button
-
-/* Hot Cue Buttons (4 buttons) */
-/* NOTE: GPIO 10 is TF_CS (SD card CS) - moved HOT_CUE_1 to GPIO 5 */
-#define BUTTON_HOT_CUE_1_PIN      5   // Moved from GPIO 10 (conflicts with SD card CS)
-#define BUTTON_HOT_CUE_2_PIN      14
-#define BUTTON_HOT_CUE_3_PIN      15
-#define BUTTON_HOT_CUE_4_PIN      16
-
-/* Jog Wheel */
-#define JOG_WHEEL_A_PIN           17  // Rotary encoder A
-// GPIO 36 conflicts with Octal PSRAM (required for N4R8/N8R8 modules). Disabled for stability.
-#define JOG_WHEEL_B_PIN           (-1) // 36  // Rotary encoder B
-#define JOG_WHEEL_TOUCH_PIN       46  // Touch detection for scratch mode
-
-/* Pitch Control */
-// GPIO 33/34 conflict with Octal PSRAM. Disabled for stability.
-#define PITCH_ENCODER_A_PIN       (-1) // 33  // Pitch encoder A
-#define PITCH_ENCODER_B_PIN       (-1) // 34  // Pitch encoder B
-
-/* ============================================================================
- * Other Peripherals
- * ============================================================================ */
-
-/* ============================================================================
- * Audio Configuration
- * ============================================================================ */
-
-// Uncomment to disable audio output initialization (useful if audio chip is not responding)
-// #define AUDIO_OUTPUT_DISABLE
-
-/* Audio Chip Selection */
-// Uncomment one of the following to select audio chip:
-#define AUDIO_CHIP_NS4168           1   // Onboard NS4168 audio chip (default)
-// #define AUDIO_CHIP_PCM5102A        1   // External PCM5102A DAC
-
-#if defined(AUDIO_CHIP_NS4168) && AUDIO_CHIP_NS4168
-/* I2S Audio (Onboard audio chip - NS4168) */
-/* Pinout from JC4827W543 board documentation: */
-/*   IO2:  SPECK_LRCLK (I2S LRCK/WS) */
-/*   IO41: SPECK_DIN (I2S DIN) */
-/*   IO42: SPECK_BCLK (I2S BCLK) */
-#define I2S_BCLK_PIN              42  // Bit Clock (BCK) - SPECK_BCLK
-#define I2S_LRCK_PIN              2   // Word Select (LRCK/WS) - SPECK_LRCLK
-#define I2S_DIN_PIN               41  // Data Input (DIN) - SPECK_DIN
-#define I2S_MCLK_PIN              (-1) // Master Clock (not used for onboard chip)
-
-#elif defined(AUDIO_CHIP_PCM5102A) && AUDIO_CHIP_PCM5102A
-/* I2S Audio (External PCM5102A DAC) */
-/* Pinout as per spec: */
-/*   GPIO 14: BCK (Bit Clock) */
-/*   GPIO 15: WS (LRCK/Word Select) */
-/*   GPIO 16: DIN (Data Input) */
-#define I2S_BCLK_PIN              14  // Bit Clock (BCK)
-#define I2S_LRCK_PIN              15  // Word Select (LRCK/WS)
-#define I2S_DIN_PIN               16  // Data Input (DIN)
-#define I2S_MCLK_PIN              (-1) // Master Clock (not used for PCM5102A)
-
-#else
-/* Default to NS4168 if no chip selected */
-#define I2S_BCLK_PIN              42
-#define I2S_LRCK_PIN              2
-#define I2S_DIN_PIN               41
+/* I2S Audio (Onboard NS4168) - Verified from PDF */
+#define I2S_BCLK_PIN              42  // SPECK_BCLK
+#define I2S_LRCK_PIN              2   // SPECK_LRCLK
+#define I2S_DIN_PIN               41  // SPECK_DIN
 #define I2S_MCLK_PIN              (-1)
-#endif
 
 /* ============================================================================
  * SD Card Configuration
  * ============================================================================ */
 
-// Uncomment to disable SD card initialization (useful if card is not present or has issues)
-#define SD_CARD_DISABLE
+// Enabled for track loading
+// #define SD_CARD_DISABLE
 
-// Uncomment to enable verbose SD card error diagnostics
-// #define SD_CARD_VERBOSE_ERRORS
+/* SD Card SPI Pins - Verified from PDF */
+#define SD_CS_PIN                 10  // TF_CS
+#define SD_MOSI_PIN               13  // TF_MOSI
+#define SD_MISO_PIN               11  // TF_MISO
+#define SD_SCK_PIN                12  // TF_CLK
 
-/* SD Card (if needed) */
-/* NOTE: SD card shares SPI3_HOST bus with touch controller (XPT2046) */
-/* Both use same MOSI/MISO/SCK pins but different CS pins */
-/* Pinout from JC4827W543 board documentation: */
-/*   IO10: TF_CS (SD card Chip Select) */
-/*   IO11: RTP_DIN/TF_MISO (Touch DIN / SD card MISO) */
-/*   IO12: RTP_CLK/TF_CLK (Touch Clock / SD card Clock) */
-/*   IO13: RTP_DIO/TF_MOSI (Touch DIO / SD card MOSI) */
-/* Note: Display uses SPI2_HOST with different pins (GPIO 21/47/45) */
-#define SD_CS_PIN                 10  // Chip Select (TF_CS from pinout)
-#define SD_MOSI_PIN               13  // SPI MOSI (TF_MOSI/RTP_DIO from pinout, shared with touch)
-#define SD_MISO_PIN               11  // SPI MISO (TF_MISO/RTP_DIN from pinout, shared with touch)
-#define SD_SCK_PIN                12  // SPI Clock (TF_CLK/RTP_CLK from pinout, shared with touch)
+/* ============================================================================
+ * DJ Controls Configuration (DISABLED for screen-only setup)
+ * ============================================================================ */
+
+/* Hardware controls disabled to avoid pin conflicts and log spam */
+#define BUTTON_CUE_PIN            (-1)
+#define BUTTON_PLAY_PAUSE_PIN     (-1)
+#define BUTTON_SYNC_PIN           (-1)
+#define BUTTON_LOOP_IN_PIN        (-1)
+#define BUTTON_LOOP_OUT_PIN       (-1)
+#define BUTTON_HOT_CUE_1_PIN      (-1)
+#define BUTTON_HOT_CUE_2_PIN      (-1)
+#define BUTTON_HOT_CUE_3_PIN      (-1)
+#define BUTTON_HOT_CUE_4_PIN      (-1)
+
+#define JOG_WHEEL_A_PIN           (-1)
+#define JOG_WHEEL_B_PIN           (-1)
+#define JOG_WHEEL_TOUCH_PIN       (-1)
+
+#define PITCH_ENCODER_A_PIN       (-1)
+#define PITCH_ENCODER_B_PIN       (-1)
+
+/* ============================================================================
+ * Other Peripherals
+ * ============================================================================ */
 
 /* USB OTG Pins (for USB host mode) */
 // Uncomment to disable USB host initialization (useful if it interferes with serial communication)
 #define USB_HOST_DISABLE
 
-#define USB_DM_PIN                19  // USB D- (Data Minus)
-#define USB_DP_PIN                20  // USB D+ (Data Plus)
-
-/* UART (Serial) */
-#define UART_TX_PIN               43  // Default UART0 TX
-#define UART_RX_PIN               44  // Default UART0 RX
-#define UART_BAUD_RATE            115200
+#define USB_DM_PIN                20  // USB-
+#define USB_DP_PIN                19  // USB+
+#define UART_TX_PIN               43  // U0TXD
+#define UART_RX_PIN               44  // U0RXD
 
 /* ============================================================================
  * LEDC Configuration (Backlight PWM)
  * ============================================================================ */
 
-#define LEDC_CHANNEL_BACKLIGHT    0   // LEDC channel for backlight
-#define LEDC_TIMER_BIT            12  // 12-bit precision
-#define LEDC_BASE_FREQ            5000 // 5kHz base frequency
-#define LEDC_MAX_DUTY              4095 // 2^12 - 1
-#define LEDC_DEFAULT_BRIGHTNESS    250 // Default brightness (0-255)
+#define LEDC_CHANNEL_BACKLIGHT    0
+#define LEDC_TIMER_BIT            12
+#define LEDC_BASE_FREQ            5000
+#define LEDC_MAX_DUTY              4095
+#define LEDC_DEFAULT_BRIGHTNESS    200
 
 /* ============================================================================
  * Helper Macros
  * ============================================================================ */
 
-/* Check if pin is valid (not -1) */
 #define PIN_IS_VALID(pin)         ((pin) >= 0)
-
-/* Convert brightness 0-255 to LEDC duty cycle */
-#define BRIGHTNESS_TO_DUTY(brightness) \
-    ((uint32_t)((brightness) * LEDC_MAX_DUTY / 255))
+#define BRIGHTNESS_TO_DUTY(brightness) ((uint32_t)((brightness) * LEDC_MAX_DUTY / 255))
 
 #ifdef __cplusplus
 }
