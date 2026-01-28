@@ -17,6 +17,10 @@
 #include "freertos/task.h"
 #include <string.h>
 
+#define SD_CARD_VERBOSE_ERRORS 1
+
+#define SD_CARD_VERBOSE_ERRORS 1
+
 static const char *TAG = "sd_card";
 static const char *SD_MOUNT_POINT = "/sdcard";
 static bool sd_mounted = false;
@@ -37,6 +41,21 @@ bool sd_card_init(void) {
     ESP_LOGI(TAG, "  MISO: GPIO %d", SD_MISO_PIN);
     ESP_LOGI(TAG, "  SCK:  GPIO %d", SD_SCK_PIN);
     
+    // Check bus lines level (should be high due to pull-ups)
+    gpio_set_direction((gpio_num_t)11, GPIO_MODE_INPUT);
+    gpio_set_pull_mode((gpio_num_t)11, GPIO_PULLUP_ONLY);
+    gpio_set_direction((gpio_num_t)13, GPIO_MODE_INPUT);
+    gpio_set_pull_mode((gpio_num_t)13, GPIO_PULLUP_ONLY);
+    
+    vTaskDelay(pdMS_TO_TICKS(10));
+    int pin11_level = gpio_get_level((gpio_num_t)11);
+    int pin13_level = gpio_get_level((gpio_num_t)13);
+    ESP_LOGI(TAG, "  Bus levels: GPIO 11=%d, GPIO 13=%d (Expected both 1)", pin11_level, pin13_level);
+    
+    if (pin11_level == 0 || pin13_level == 0) {
+        ESP_LOGW(TAG, "Warning: SPI line(s) are LOW! Possible bus contention or missing pull-up.");
+    }
+
     // Configure CS pin as output with pull-up and set it high (inactive) before SPI init
     // SD cards require pull-up on CS line (typically 10-50 kOhm)
     gpio_config_t cs_io_conf = {
@@ -82,7 +101,7 @@ bool sd_card_init(void) {
     ESP_LOGW(TAG, "Touch controller not configured - assuming no SPI conflict");
 #endif
     
-    vTaskDelay(pdMS_TO_TICKS(100)); // Longer delay for SD card power stabilization
+    vTaskDelay(pdMS_TO_TICKS(200)); // Longer delay for SD card power stabilization
     
     // SD card shares SPI3_HOST bus with touch controller (XPT2046) if resistive touch is used
     // If capacitive touch (GT911) is used, it uses I2C, so SD card has SPI3_HOST to itself
@@ -131,7 +150,8 @@ bool sd_card_init(void) {
     // Then override only the slot to use SPI3_HOST instead of default SPI2_HOST
     sdmmc_host_t host = SDSPI_HOST_DEFAULT();
     host.slot = spi_host;  // Override to use SPI3_HOST (shared with touch controller)
-    host.max_freq_khz = 200;  // Start with 200kHz for card detection (very low for shared bus and reliability)
+    host.max_freq_khz = 20000;  // Increase to 20MHz for better performance
+    host.flags = SDMMC_HOST_FLAG_SPI; // Explicitly enforce SPI mode
     
     sdspi_device_config_t slot_config = SDSPI_DEVICE_CONFIG_DEFAULT();
     slot_config.gpio_cs = SD_CS_PIN;

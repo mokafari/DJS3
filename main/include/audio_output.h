@@ -8,6 +8,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include "board_config.h"
 
 #ifdef __cplusplus
@@ -25,6 +26,15 @@ bool audio_output_init(void);
  * @brief Deinitialize I2S audio output
  */
 void audio_output_deinit(void);
+
+/**
+ * @brief Write PCM samples to I2S output
+ * 
+ * @param samples Pointer to interleaved stereo 16-bit samples
+ * @param count Number of samples (not bytes) to write
+ * @return Number of samples actually written
+ */
+size_t audio_output_write(const int16_t *samples, size_t count);
 
 /**
  * @brief Set sample rate

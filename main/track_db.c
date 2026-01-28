@@ -21,24 +21,31 @@ static uint32_t track_count = 0;
  * @brief Parse ID3v2 tag using ID3 parser
  */
 static void parse_id3_tag(const char *filepath, track_info_t *info) {
-    id3_tag_t tag;
-    if (id3_parse_file(filepath, &tag)) {
+    id3_tag_t *tag = (id3_tag_t*)malloc(sizeof(id3_tag_t));
+    if (!tag) {
+        info->has_id3 = false;
+        return;
+    }
+    
+    if (id3_parse_file(filepath, tag)) {
         info->has_id3 = true;
         
         // Copy title
-        if (tag.title[0] != '\0') {
-            strncpy(info->title, tag.title, sizeof(info->title) - 1);
+        if (tag->title[0] != '\0') {
+            strncpy(info->title, tag->title, sizeof(info->title) - 1);
             info->title[sizeof(info->title) - 1] = '\0';
         }
         
         // Copy artist
-        if (tag.artist[0] != '\0') {
-            strncpy(info->artist, tag.artist, sizeof(info->artist) - 1);
+        if (tag->artist[0] != '\0') {
+            strncpy(info->artist, tag->artist, sizeof(info->artist) - 1);
             info->artist[sizeof(info->artist) - 1] = '\0';
         }
     } else {
         info->has_id3 = false;
     }
+    
+    free(tag);
 }
 
 /**
@@ -64,7 +71,13 @@ static uint32_t scan_directory(const char *path, uint32_t start_index) {
     
     uint32_t count = start_index;
     struct dirent *entry;
-    char full_path[512];
+    // Allocate buffer on heap to save stack space
+    char *full_path = (char*)malloc(512);
+    if (!full_path) {
+        ESP_LOGE(TAG, "Failed to allocate memory for path scanning");
+        closedir(dir);
+        return 0;
+    }
     
     while ((entry = readdir(dir)) != NULL && count < MAX_TRACKS) {
         // Skip . and ..
@@ -73,21 +86,23 @@ static uint32_t scan_directory(const char *path, uint32_t start_index) {
         }
         
         // Build full path
-        snprintf(full_path, sizeof(full_path), "%s/%s", path, entry->d_name);
+        snprintf(full_path, 512, "%s/%s", path, entry->d_name);
         
         struct stat st;
         if (stat(full_path, &st) == 0) {
             if (S_ISREG(st.st_mode) && is_mp3_file(entry->d_name)) {
                 // Found MP3 file
                 track_info_t *track = &tracks[count];
-                strncpy(track->filename, entry->d_name, sizeof(track->filename) - 1);
+                
+                // Store full path
+                strncpy(track->filename, full_path, sizeof(track->filename) - 1);
                 track->filename[sizeof(track->filename) - 1] = '\0';
+                
                 track->file_size = st.st_size;
                 track->duration_seconds = 0; // TODO: Parse from MP3
                 track->has_id3 = false;
                 
                 // Try to parse ID3 tag
-                snprintf(full_path, sizeof(full_path), "%s/%s", path, entry->d_name);
                 parse_id3_tag(full_path, track);
                 
                 // Use filename as title if no ID3
@@ -108,6 +123,7 @@ static uint32_t scan_directory(const char *path, uint32_t start_index) {
         }
     }
     
+    free(full_path);
     closedir(dir);
     return count - start_index;
 }

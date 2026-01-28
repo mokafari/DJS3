@@ -75,10 +75,10 @@ extern "C" {
 // Enabled for track loading
 // #define SD_CARD_DISABLE
 
-/* SD Card SPI Pins - Verified from PDF */
+/* SD Card SPI Pins - Verified from PDF and GitHub discussion */
 #define SD_CS_PIN                 10  // TF_CS
-#define SD_MOSI_PIN               13  // TF_MOSI
-#define SD_MISO_PIN               11  // TF_MISO
+#define SD_MOSI_PIN               11  // TF_MOSI (Matched with GitHub: 11)
+#define SD_MISO_PIN               13  // TF_MISO (Matched with GitHub: 13)
 #define SD_SCK_PIN                12  // TF_CLK
 
 /* ============================================================================

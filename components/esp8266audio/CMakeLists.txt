@@ -23,6 +23,7 @@ target_compile_options(${COMPONENT_LIB} PRIVATE
     -Wall
     -Wextra
     -Wno-unused-parameter
+    -DESP32
 )
 
 # ESP32-S3 specific flags
