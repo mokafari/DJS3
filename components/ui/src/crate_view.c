@@ -264,10 +264,15 @@ void crate_view_cleanup(void) {
 }
 
 void crate_view_refresh_tracks(void) {
-    if (!track_list) return;
+    if (!track_list) {
+        ESP_LOGW(TAG, "Cannot refresh tracks: track_list not initialized");
+        return;
+    }
     
     // Get track count from database
     uint32_t track_count = track_db_get_count();
+    ESP_LOGI(TAG, "Refreshing crate view with %lu tracks", track_count);
+    
     if (track_count == 0) {
         crate_view_cleanup();
         return;
@@ -284,7 +289,12 @@ void crate_view_refresh_tracks(void) {
     for (uint32_t i = 0; i < track_count; i++) {
         track_info_t info;
         if (track_db_get_track(i, &info)) {
-            track_names_array[i] = strdup(info.title);
+            ESP_LOGI(TAG, "Track %lu: filename='%s', title='%s', has_id3=%d", 
+                     i, info.filename, info.title, info.has_id3);
+            
+            // Use title if available, otherwise use filename
+            const char *display_name = (info.title[0] != '\0') ? info.title : info.filename;
+            track_names_array[i] = strdup(display_name);
             if (!track_names_array[i]) {
                 ESP_LOGE(TAG, "Failed to duplicate track name %lu", i);
                 // Clean up on failure
@@ -294,13 +304,16 @@ void crate_view_refresh_tracks(void) {
                 free(track_names_array);
                 return;
             }
+            ESP_LOGD(TAG, "Track %lu display name: '%s'", i, track_names_array[i]);
         } else {
+            ESP_LOGW(TAG, "Failed to get track %lu from database", i);
             track_names_array[i] = strdup("Unknown");
         }
     }
     
     // Update crate view with new tracks
     crate_view_set_tracks(track_names_array, track_count);
+    ESP_LOGI(TAG, "Crate view updated with %lu tracks", track_count);
     
     // Free the temporary array (crate_view now owns the strings)
     free(track_names_array);

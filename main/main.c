@@ -531,7 +531,8 @@ void app_main(void)
                 // Update waveform in UI with real data
                 static uint8_t waveform_data[480];
                 audio_player_get_waveform(waveform_data, 480);
-                ui_manager_update_waveform(waveform_data, 480, position);
+                size_t wave_index = audio_player_get_waveform_index();
+                ui_manager_update_waveform(waveform_data, 480, position, wave_index);
                 
                 // Update telemetry (BPM, pitch, phase error)
                 float bpm = 120.0f; // TODO: Get actual BPM

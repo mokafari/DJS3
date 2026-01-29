@@ -1,6 +1,6 @@
 /**
  * @file id3_parser.h
- * @brief ID3v2 tag parser for MP3 files
+ * @brief ID3 tag parser for MP3 files (supports ID3v1 and ID3v2)
  */
 
 #ifndef ID3_PARSER_H
@@ -29,7 +29,7 @@ typedef struct {
 } id3_tag_t;
 
 /**
- * @brief Parse ID3v2 tag from file
+ * @brief Parse ID3 tag from file (tries ID3v2 first, then ID3v1)
  * 
  * @param filepath Path to MP3 file
  * @param tag Pointer to id3_tag_t structure to fill

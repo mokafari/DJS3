@@ -1,8 +1,11 @@
 /**
  * @file id3_parser.c
- * @brief ID3v2 tag parser implementation
+ * @brief ID3 tag parser implementation
  * 
- * Supports ID3v2.3 and ID3v2.4 tags
+ * Supports:
+ * - ID3v2.3 and ID3v2.4 tags (at beginning of file)
+ * - ID3v1 and ID3v1.1 tags (at end of file, as fallback)
+ * 
  * Parses common frames: TIT2, TPE1, TALB, TCON, TYER, TRCK
  */
 
@@ -212,9 +215,93 @@ static bool parse_id3v2_frames(const uint8_t *buffer, size_t size, id3_tag_t *ta
     return true;
 }
 
+/**
+ * @brief Parse ID3v1 tag from buffer (128 bytes at end of file)
+ * 
+ * ID3v1 format:
+ * - Offset 0-2: "TAG" identifier
+ * - Offset 3-32: Title (30 bytes)
+ * - Offset 33-62: Artist (30 bytes)
+ * - Offset 63-92: Album (30 bytes)
+ * - Offset 93-96: Year (4 bytes)
+ * - Offset 97-126: Comment (30 bytes) or Comment (28) + Track (1) + Zero (1)
+ * - Offset 127: Genre (1 byte)
+ */
+static bool parse_id3v1_tag(const uint8_t *buffer, id3_tag_t *tag) {
+    // Check for "TAG" identifier
+    if (memcmp(buffer, "TAG", 3) != 0) {
+        return false;
+    }
+    
+    memset(tag, 0, sizeof(id3_tag_t));
+    
+    // Copy title (30 bytes at offset 3)
+    size_t out_idx = 0;
+    for (int i = 0; i < 30 && out_idx < sizeof(tag->title) - 1; i++) {
+        uint8_t c = buffer[3 + i];
+        if (c >= 32 && c < 127) {
+            tag->title[out_idx++] = c;
+        }
+    }
+    tag->title[out_idx] = '\0';
+    
+    // Trim trailing spaces
+    while (out_idx > 0 && tag->title[out_idx - 1] == ' ') {
+        tag->title[--out_idx] = '\0';
+    }
+    
+    // Copy artist (30 bytes at offset 33)
+    out_idx = 0;
+    for (int i = 0; i < 30 && out_idx < sizeof(tag->artist) - 1; i++) {
+        uint8_t c = buffer[33 + i];
+        if (c >= 32 && c < 127) {
+            tag->artist[out_idx++] = c;
+        }
+    }
+    tag->artist[out_idx] = '\0';
+    
+    // Trim trailing spaces
+    while (out_idx > 0 && tag->artist[out_idx - 1] == ' ') {
+        tag->artist[--out_idx] = '\0';
+    }
+    
+    // Copy album (30 bytes at offset 63)
+    out_idx = 0;
+    for (int i = 0; i < 30 && out_idx < sizeof(tag->album) - 1; i++) {
+        uint8_t c = buffer[63 + i];
+        if (c >= 32 && c < 127) {
+            tag->album[out_idx++] = c;
+        }
+    }
+    tag->album[out_idx] = '\0';
+    
+    // Trim trailing spaces
+    while (out_idx > 0 && tag->album[out_idx - 1] == ' ') {
+        tag->album[--out_idx] = '\0';
+    }
+    
+    // Parse year (4 bytes at offset 93)
+    char year_str[5] = {0};
+    memcpy(year_str, &buffer[93], 4);
+    tag->year = (uint16_t)atoi(year_str);
+    
+    // Check for ID3v1.1 (track number in comment field)
+    if (buffer[125] == 0 && buffer[126] != 0) {
+        tag->track = buffer[126];
+    }
+    
+    tag->has_tag = true;
+    tag->tag_size = 0; // ID3v1 is at end of file, doesn't affect audio offset
+    
+    ESP_LOGI(TAG, "Parsed ID3v1 title: '%s', artist: '%s'", tag->title, tag->artist);
+    
+    return (tag->title[0] != '\0'); // Success if we got at least a title
+}
+
 bool id3_parse_file(const char *filepath, id3_tag_t *tag) {
     FILE *f = fopen(filepath, "rb");
     if (!f) {
+        ESP_LOGW(TAG, "Failed to open file: %s", filepath);
         return false;
     }
     
@@ -226,40 +313,65 @@ bool id3_parse_file(const char *filepath, id3_tag_t *tag) {
     }
     
     id3v2_header_t header;
-    if (!parse_id3v2_header(header_buf, 10, &header)) {
+    bool has_id3v2 = parse_id3v2_header(header_buf, 10, &header);
+    
+    if (has_id3v2) {
+        // The FULL tag size (what we need to skip for audio)
+        uint32_t full_tag_size = header.size + 10; // Header (10) + Body
+        
+        // For parsing metadata, we only need to read the first part
+        // (title, artist are usually in the first few KB, album art comes later)
+        uint32_t parse_size = header.size;
+        if (parse_size > 16384) { // Limit memory usage for parsing
+            parse_size = 16384;
+        }
+        
+        uint8_t *tag_data = (uint8_t*)malloc(parse_size);
+        if (!tag_data) {
+            fclose(f);
+            return false;
+        }
+        
+        if (fread(tag_data, 1, parse_size, f) != parse_size) {
+            free(tag_data);
+            fclose(f);
+            return false;
+        }
+        
         fclose(f);
-        return false;
-    }
-    
-    // Read tag data
-    uint32_t tag_size = header.size;
-    if (tag_size > 16384) { // Sanity check: max 16KB tag for metadata view
-        tag_size = 16384;
-    }
-    
-    uint8_t *tag_data = (uint8_t*)malloc(tag_size);
-    if (!tag_data) {
-        fclose(f);
-        return false;
-    }
-    
-    if (fread(tag_data, 1, tag_size, f) != tag_size) {
+        
+        // Parse frames
+        bool result = parse_id3v2_frames(tag_data, parse_size, tag, header.version_major);
+        if (result) {
+            // CRITICAL: Use the FULL tag size, not truncated size
+            // This is what the audio player needs to skip to reach audio data
+            tag->tag_size = full_tag_size;
+            ESP_LOGI(TAG, "Parsed title: %s (Full tag size: %lu, parsed: %lu)", 
+                     tag->title, tag->tag_size, parse_size);
+        }
+        
         free(tag_data);
+        return result;
+    }
+    
+    // No ID3v2 tag found, try ID3v1 at end of file
+    ESP_LOGD(TAG, "No ID3v2 tag, trying ID3v1 for: %s", filepath);
+    
+    // Seek to last 128 bytes of file
+    if (fseek(f, -128, SEEK_END) != 0) {
+        fclose(f);
+        return false;
+    }
+    
+    uint8_t id3v1_buf[128];
+    if (fread(id3v1_buf, 1, 128, f) != 128) {
         fclose(f);
         return false;
     }
     
     fclose(f);
     
-    // Parse frames
-    bool result = parse_id3v2_frames(tag_data, tag_size, tag, header.version_major);
-    if (result) {
-        tag->tag_size = tag_size + 10; // Header (10) + Body
-        ESP_LOGI(TAG, "Parsed title: %s (Tag size: %lu)", tag->title, tag->tag_size);
-    }
-    
-    free(tag_data);
-    return result;
+    return parse_id3v1_tag(id3v1_buf, tag);
 }
 
 bool id3_parse_buffer(const uint8_t *buffer, size_t size, id3_tag_t *tag) {

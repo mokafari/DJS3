@@ -10,7 +10,7 @@ Complete implementation of the "High-Contrast HUD" UI system for the ESP32-S3 DJ
 
 1. **lvgl_driver** - LVGL integration layer with display and touch drivers
 2. **hud_theme** - Theme system with three phosphor colors (Amber, Cyan, Green)
-3. **waveform_view** - Vertical bar graph waveform with ghosting effect
+3. **waveform_view** - Vertical bar graph waveform display
 4. **telemetry_view** - BPM, pitch, and phase error bar display
 5. **metadata_view** - Track title, key, and time remaining
 6. **crate_view** - Library browser with inverted selection
@@ -31,7 +31,6 @@ Complete implementation of the "High-Contrast HUD" UI system for the ESP32-S3 DJ
 
 ### ✅ Waveform View
 - Vertical bar graph style (spectrum analyzer look)
-- Ghosting effect (3-frame fade trail)
 - Beat grid lines (dotted vertical)
 - Playhead indicator (center vertical line)
 - Touch feedback cursor
@@ -65,14 +64,13 @@ Complete implementation of the "High-Contrast HUD" UI system for the ESP32-S3 DJ
 - Custom flush callback integrates with existing display driver
 
 ### Performance Optimizations
-- Circular buffer for waveform ghosting (3 frames)
 - Canvas-based waveform rendering
+- Direct buffer access for crisp display
 - Efficient bar graph drawing
 - Minimal LVGL widget usage (prefer primitives)
 
 ### Memory Usage
 - Display buffers: ~40 lines × width × 2 bytes × 2 buffers
-- Waveform history: 480 bars × 3 frames × 1 byte
 - All allocations use PSRAM where possible
 
 ## Integration Notes
@@ -133,7 +131,6 @@ while (1) {
 
 ## Notes
 
-- The ghosting effect uses a circular buffer to store 3 frames of waveform data
 - Phase error bar grows left when behind, right when ahead
 - Crate view uses inverted selection (classic tracker style)
 - All views are initially hidden and shown/hidden as needed

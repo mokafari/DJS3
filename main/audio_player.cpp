@@ -47,15 +47,18 @@ static const char *TAG = "audio_player";
 // State
 // ---------------------------------------------------------
 
-static audio_player_state_t player_state = AUDIO_PLAYER_STATE_STOPPED;
-static audio_player_mode_t player_mode = AUDIO_PLAYER_MODE_SIMPLE;
-static char current_filepath[512] = {0};
-static char current_track_title[128] = {0};
 static uint32_t current_position_seconds = 0;
 static uint32_t total_duration_seconds = 0;
 static float current_gain = 0.5f;
+static uint32_t current_sample_rate = 44100;
 
 static volatile uint64_t total_bytes_played = 0;
+
+// Player State
+static audio_player_state_t player_state = AUDIO_PLAYER_STATE_STOPPED;
+static audio_player_mode_t player_mode = AUDIO_PLAYER_MODE_SIMPLE;
+static char current_track_title[128] = {0};
+static char current_filepath[256] = {0};
 
 // MP3 Decoder State
 static HMP3Decoder hMP3Decoder = 0;
@@ -251,6 +254,13 @@ static void decoder_task(void *pvParameters) {
                 if (res == ERR_MP3_NONE) {
                     MP3FrameInfo frameInfo;
                     MP3GetLastFrameInfo(hMP3Decoder, &frameInfo);
+                    
+                    // Update sample rate if it changed
+                    if (frameInfo.samprate != (int)current_sample_rate && frameInfo.samprate > 0) {
+                        current_sample_rate = frameInfo.samprate;
+                        audio_output_set_rate(current_sample_rate);
+                    }
+
                     size_t pcm_bytes = frameInfo.outputSamps * sizeof(int16_t);
                     
                     // 1. Write to PCM Ring Buffer
@@ -265,29 +275,27 @@ static void decoder_task(void *pvParameters) {
                         memcpy(&pcm_ring_buffer[0], (uint8_t*)decode_buf + space_at_end, pcm_bytes - space_at_end);
                     }
                     
-                    // 2. Update Waveform Ring Buffer
-                    // Map this chunk to the waveform buffer index
-                    // We calculate one peak for this entire frame (or sub-chunks)
-                    // Frame ~4608 bytes. WAVEFORM_RATIO = 256. 
-                    // This frame updates approx 18 entries in the waveform buffer.
-                    
-                    size_t wave_idx_start = rb_write_head / WAVEFORM_RATIO;
-                    
-                    for (size_t i = 0; i < pcm_bytes; i += WAVEFORM_RATIO) {
-                        int16_t max_val = 0;
-                        // Search local peak
-                        for (size_t j = 0; j < WAVEFORM_RATIO && (i+j) < pcm_bytes; j += 2) {
-                            int16_t val = abs(((int16_t*)decode_buf)[(i+j)/2]);
-                            if (val > max_val) max_val = val;
+                    // 2. Update Waveform Ring Buffer (GAPLESS)
+                    // We iterate through all samples to ensure no peaks are missed.
+                    for (size_t i = 0; i < pcm_bytes; i += 2) {
+                        size_t cur_pos = rb_write_head + i;
+                        // If we cross into a new WAVEFORM_RATIO boundary, clear that index
+                        if (cur_pos % WAVEFORM_RATIO == 0) {
+                            waveform_ring_buffer[(cur_pos / WAVEFORM_RATIO) % WAVEFORM_BUFFER_SIZE] = 0;
                         }
                         
-                        size_t wave_idx = (wave_idx_start + (i / WAVEFORM_RATIO)) % WAVEFORM_BUFFER_SIZE;
-                        waveform_ring_buffer[wave_idx] = (uint8_t)(max_val >> 7);
+                        int16_t val = abs(((int16_t*)decode_buf)[i/2]);
+                        uint8_t peak = (uint8_t)(val >> 7);
+                        size_t w_idx = (cur_pos / WAVEFORM_RATIO) % WAVEFORM_BUFFER_SIZE;
+                        
+                        if (peak > waveform_ring_buffer[w_idx]) {
+                            waveform_ring_buffer[w_idx] = peak;
+                        }
                     }
                     
                     rb_write_head = (rb_write_head + pcm_bytes) % RING_BUFFER_SIZE;
                     rb_available += pcm_bytes;
-                    if (rb_available > RING_BUFFER_SIZE) rb_available = RING_BUFFER_SIZE; // Should check full before
+                    if (rb_available > RING_BUFFER_SIZE) rb_available = RING_BUFFER_SIZE;
                     
                     xSemaphoreGive(buffer_mutex);
                     
@@ -302,7 +310,6 @@ static void decoder_task(void *pvParameters) {
             if (file_bytes_left < 1024) fill_file_buffer();
             
             // Yield to allow other tasks (important!)
-            // Decoding is CPU intensive.
             vTaskDelay(1); 
             
         } else {
@@ -355,15 +362,10 @@ static void playback_task(void *pvParameters) {
             }
             
             // Blocking write to I2S
-            // This naturally throttles this task to real-time speed
             audio_output_write(i2s_buf, samples);
             
-            // Update approx position seconds for metadata
-            // Only update roughly every second to save cycles? 
-            // Or just calculate in getter.
         } else {
             // No data or paused
-            // Output silence to keep clock running or just yield
             if (player_state == AUDIO_PLAYER_STATE_PLAYING) {
                 // Buffer underrun
                 vTaskDelay(pdMS_TO_TICKS(10));
@@ -400,13 +402,7 @@ bool audio_player_init(void) {
     if (!audio_output_init()) return false;
     
     // Create Tasks
-    // Decoder: Core 1, Priority 5 (High, needs to burst fill)
     xTaskCreatePinnedToCore(decoder_task, "decoder_task", 12288, NULL, 5, &decoder_task_handle, 1);
-    
-    // Playback: Core 1, Priority 6 (Higher, needs strictly timely I2S feeding)
-    // Or put on Core 0? Core 0 runs IDLE and Main (UI). 
-    // Putting playback on Core 0 might jitter UI.
-    // Core 1 is better for Audio. Preemptive scheduling handles priorities.
     xTaskCreatePinnedToCore(playback_task, "playback_task", 4096, NULL, 6, &playback_task_handle, 1);
     
     return true;
@@ -442,6 +438,14 @@ void audio_player_get_waveform(uint8_t *buffer, size_t size) {
     xSemaphoreGive(buffer_mutex);
 }
 
+size_t audio_player_get_waveform_index(void) {
+    size_t idx;
+    xSemaphoreTake(buffer_mutex, portMAX_DELAY);
+    idx = rb_read_head / WAVEFORM_RATIO;
+    xSemaphoreGive(buffer_mutex);
+    return idx;
+}
+
 // Wrappers for commands
 bool audio_player_load(const char *filepath) {
     player_cmd_t cmd = { .type = CMD_LOAD, .filepath = {0} };
@@ -475,10 +479,9 @@ uint32_t audio_player_get_duration(void) { return total_duration_seconds; }
 
 uint32_t audio_player_get_position(void) {
     // Calculate precise position based on bytes played
-    // 16-bit stereo = 4 bytes per sample frame.
-    // 44100 Hz * 4 = 176400 bytes/sec
+    uint32_t bytes_per_sec = current_sample_rate * 4;
     if (total_bytes_played > 0) {
-        return (uint32_t)(total_bytes_played / 176400);
+        return (uint32_t)(total_bytes_played / bytes_per_sec);
     }
     return 0;
 }

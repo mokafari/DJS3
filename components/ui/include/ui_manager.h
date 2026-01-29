@@ -66,10 +66,17 @@ void ui_manager_set_view(ui_view_type_t view);
  * @param waveform_data Waveform peak data (array of values 0-255)
  * @param num_samples Number of samples
  * @param position Current playback position (0.0 to 1.0)
+ * @param wave_index Current waveform buffer index for scroll optimization
  */
 void ui_manager_update_waveform(const uint8_t *waveform_data, 
                                 size_t num_samples, 
-                                float position);
+                                float position,
+                                size_t wave_index);
+
+/**
+ * @brief Reset waveform scroll state (call when loading new track)
+ */
+void ui_manager_reset_waveform(void);
 
 /**
  * @brief Update telemetry (BPM, pitch, phase error)

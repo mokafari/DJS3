@@ -172,6 +172,15 @@ const char* audio_player_get_track_title(void);
  */
 void audio_player_get_waveform(uint8_t *buffer, size_t size);
 
+/**
+ * @brief Get current waveform buffer index (sample-accurate position)
+ * 
+ * Used for ring buffer scroll optimization in waveform display.
+ * 
+ * @return Current waveform buffer index
+ */
+size_t audio_player_get_waveform_index(void);
+
 #ifdef __cplusplus
 }
 #endif

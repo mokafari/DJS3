@@ -150,16 +150,21 @@ static uint32_t scan_directory(const char *path, uint32_t start_index) {
                 // Found MP3 file
                 track_info_t *track = &tracks[count];
                 
-                // Store full path
+                // Store full path (using entry->d_name which may be DOS 8.3 format)
+                // On FAT filesystems, this should still work for opening files
                 strncpy(track->filename, full_path, sizeof(track->filename) - 1);
                 track->filename[sizeof(track->filename) - 1] = '\0';
+                
+                ESP_LOGI(TAG, "Found MP3 file: %s (size: %lu bytes)", track->filename, st.st_size);
                 
                 track->file_size = st.st_size;
                 track->duration_seconds = 0; // TODO: Parse from MP3
                 track->has_id3 = false;
                 
                 // Try to parse ID3 tag
+                ESP_LOGD(TAG, "Parsing ID3 tag for: %s", track->filename);
                 parse_id3_tag(full_path, track);
+                ESP_LOGI(TAG, "ID3 parse result - has_id3: %d, title: '%s'", track->has_id3, track->title);
                 
                 // Use filename as title only if ID3 parsing completely failed
                 // If ID3 exists but title is empty, try artist as fallback, then filename

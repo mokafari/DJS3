@@ -111,12 +111,20 @@ int ui_manager_init(uint32_t width, uint32_t height) {
 void ui_manager_handle_crate_select(int index) {
     track_info_t info;
     if (track_db_get_track(index, &info)) {
-        ESP_LOGI(TAG, "Loading track from UI: %s", info.filename);
+        ESP_LOGI(TAG, "Loading track from UI: index=%d, filename='%s', title='%s', has_id3=%d", 
+                 index, info.filename, info.title, info.has_id3);
+        
+        // Try to load the file
         if (audio_player_load(info.filename)) {
+            ESP_LOGI(TAG, "Track loaded successfully, starting playback");
             audio_player_play();
             // Switch back to waveform view after loading
             ui_manager_set_view(UI_VIEW_WAVEFORM);
+        } else {
+            ESP_LOGE(TAG, "Failed to load track: %s", info.filename);
         }
+    } else {
+        ESP_LOGE(TAG, "Failed to get track info for index %d", index);
     }
 }
 
@@ -165,9 +173,15 @@ void ui_manager_set_view(ui_view_type_t view) {
 
 void ui_manager_update_waveform(const uint8_t *waveform_data, 
                                 size_t num_samples, 
-                                float position) {
+                                float position,
+                                size_t wave_index) {
     if (!s_initialized) return;
-    waveform_view_update(waveform_data, num_samples, position);
+    waveform_view_update(waveform_data, num_samples, position, wave_index);
+}
+
+void ui_manager_reset_waveform(void) {
+    if (!s_initialized) return;
+    waveform_view_reset();
 }
 
 void ui_manager_update_telemetry(float bpm, float pitch, float phase_error) {
