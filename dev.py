@@ -204,10 +204,17 @@ def flash_project(env, port=None, force_download=False):
         print_error(f"Flash error: {e}")
         return False
 
-def monitor_serial_direct(port=None, baud=115200, auto_exit=False):
+def monitor_serial_direct(port=None, baud=115200, auto_exit=False, wait_for_reset=False):
     """Monitor serial output directly using pyserial (works without TTY).
     
-    This is a fallback when idf_monitor requires TTY.
+    Args:
+        port: Serial port path
+        baud: Baud rate
+        auto_exit: If True, exit on errors/crashes
+        wait_for_reset: If True, wait for user to reset device before displaying logs
+    
+    Returns:
+        True on graceful exit (Ctrl+C), False on error/connection loss
     """
     if not PYSERIAL_AVAILABLE:
         print_error("pyserial not available. Install with: pip install pyserial")
@@ -251,7 +258,92 @@ def monitor_serial_direct(port=None, baud=115200, auto_exit=False):
             raise serial.SerialException("Failed to open serial port after retries")
             
         print_success(f"Serial port opened: {port}")
-        print(f"{Colors.WARNING}Press Ctrl+C to exit{Colors.ENDC}\n")
+        
+        # If waiting for reset, wait for serial output to start
+        if wait_for_reset:
+            print(f"\n{Colors.OKCYAN}{'='*60}{Colors.ENDC}")
+            print(f"{Colors.OKCYAN}Serial logging ready. Please reset the device.{Colors.ENDC}")
+            print(f"{Colors.OKCYAN}Waiting for device output...{Colors.ENDC}")
+            print(f"{Colors.WARNING}Press Ctrl+C to cancel{Colors.ENDC}")
+            print(f"{Colors.OKCYAN}{'='*60}{Colors.ENDC}\n")
+            
+            # Wait for first output (up to 30 seconds)
+            # Allow port to disappear during reboot and wait for it to reappear
+            wait_start = time.time()
+            wait_timeout = 30
+            port_reappear_timeout = 10  # Max time to wait for port to reappear after disconnect
+            got_output = False
+            port_disconnected = False
+            
+            try:
+                while (time.time() - wait_start) < wait_timeout:
+                    # Check if port still exists
+                    if not os.path.exists(port):
+                        if not port_disconnected:
+                            # First time port disappears - device is rebooting
+                            print_step(f"Port {port} disconnected (device rebooting)...")
+                            try:
+                                ser.close()
+                            except:
+                                pass  # Already closed or error
+                            port_disconnected = True
+                            port_disconnect_time = time.time()
+                        
+                        # Wait for port to reappear
+                        if (time.time() - port_disconnect_time) > port_reappear_timeout:
+                            print_error(f"Port {port} did not reappear after {port_reappear_timeout} seconds")
+                            return False
+                        
+                        time.sleep(0.5)
+                        continue
+                    
+                    # Port exists - if we were disconnected, reopen connection
+                    if port_disconnected:
+                        print_step(f"Port {port} reappeared, reopening connection...")
+                        try:
+                            ser = serial.Serial(port, baud, timeout=1)
+                            print_success("Connection reopened")
+                            port_disconnected = False
+                        except serial.SerialException as e:
+                            print_warning(f"Failed to reopen port: {e}, retrying...")
+                            time.sleep(0.5)
+                            continue
+                    
+                    # Check for serial output
+                    try:
+                        if ser.in_waiting > 0:
+                            # Got output, device has reset
+                            got_output = True
+                            print(f"{Colors.OKGREEN}Device output detected, starting log display...{Colors.ENDC}\n")
+                            break
+                    except (serial.SerialException, OSError) as e:
+                        # Connection error - might be rebooting, close and wait for reconnect
+                        if not port_disconnected:
+                            print_step(f"Serial connection lost (device may be rebooting): {e}")
+                            try:
+                                ser.close()
+                            except:
+                                pass  # Already closed or error
+                            port_disconnected = True
+                            port_disconnect_time = time.time()
+                        time.sleep(0.5)
+                        continue
+                    
+                    time.sleep(0.1)
+            except KeyboardInterrupt:
+                print(f"\n{Colors.OKGREEN}Graceful exit requested by user (Ctrl+C){Colors.ENDC}")
+                try:
+                    ser.close()
+                except:
+                    pass
+                return True
+            
+            if not got_output:
+                print_warning(f"No output detected after {wait_timeout} seconds")
+                print_warning("Device might not be responding. Press Ctrl+C to cancel or wait longer.")
+                # Continue anyway - user might want to see what happens
+        
+        print(f"{Colors.WARNING}Press Ctrl+C for graceful exit{Colors.ENDC}\n")
         
         error_keywords = [
             "Guru Meditation",
@@ -262,8 +354,6 @@ def monitor_serial_direct(port=None, baud=115200, auto_exit=False):
             "CORRUPT",
             "Stack overflow",
             "***ERROR***",
-            # Note: "E (" removed - ESP-IDF errors are often expected/non-fatal
-            # and stopping on them can mask other failures
         ]
         
         # Separate list for warnings that should be logged but not trigger auto-exit
@@ -273,53 +363,73 @@ def monitor_serial_direct(port=None, baud=115200, auto_exit=False):
         
         last_output_time = time.time()
         timeout_seconds = 60
+        connection_check_interval = 5  # Check connection every 5 seconds
         
         try:
             error_count = 0
+            last_connection_check = time.time()
+            
             while True:
-                if ser.in_waiting > 0:
-                    line = ser.readline().decode('utf-8', errors='ignore')
-                    if line.strip():
-                        print(line, end='', flush=True)
-                        last_output_time = time.time()
-                        
-                        # Convert to lowercase for keyword matching
-                        line_lower = line.lower()
-                        
-                        # Check for warning keywords (log but never exit)
-                        for keyword in warning_keywords:
-                            if keyword.lower() in line_lower:
-                                error_count += 1
-                                print(f"\n{Colors.FAIL}⚠ [{error_count}] Warning detected: '{keyword}'{Colors.ENDC}")
-                                print(f"{Colors.WARNING}Continuing monitoring... (use Ctrl+C to exit){Colors.ENDC}")
-                                break
-                        
-                        # Check for error keywords (log but don't exit unless auto_exit is True)
-                        for keyword in error_keywords:
-                            if keyword.lower() in line_lower:
-                                error_count += 1
-                                print(f"\n{Colors.FAIL}⚠ [{error_count}] Error detected: '{keyword}'{Colors.ENDC}")
-                                if auto_exit:
-                                    print(f"{Colors.WARNING}Stopping monitor due to detected error{Colors.ENDC}")
-                                    ser.close()
-                                    return True
-                                else:
+                # Periodically check if port still exists (connection loss detection)
+                if time.time() - last_connection_check > connection_check_interval:
+                    if not os.path.exists(port):
+                        print_error(f"\n{Colors.FAIL}Connection lost: Port {port} no longer exists{Colors.ENDC}")
+                        print_error("Device may have crashed, rebooted, or disconnected")
+                        ser.close()
+                        return False
+                    last_connection_check = time.time()
+                
+                try:
+                    if ser.in_waiting > 0:
+                        line = ser.readline().decode('utf-8', errors='ignore')
+                        if line.strip():
+                            print(line, end='', flush=True)
+                            last_output_time = time.time()
+                            
+                            # Convert to lowercase for keyword matching
+                            line_lower = line.lower()
+                            
+                            # Check for warning keywords (log but never exit)
+                            for keyword in warning_keywords:
+                                if keyword.lower() in line_lower:
+                                    error_count += 1
+                                    print(f"\n{Colors.FAIL}⚠ [{error_count}] Warning detected: '{keyword}'{Colors.ENDC}")
                                     print(f"{Colors.WARNING}Continuing monitoring... (use Ctrl+C to exit){Colors.ENDC}")
                                     break
-                else:
-                    # Check for timeout (only if auto_exit)
-                    if auto_exit and (time.time() - last_output_time > timeout_seconds):
-                        print(f"\n{Colors.WARNING}⚠ No output for {timeout_seconds} seconds - possible freeze{Colors.ENDC}")
-                        ser.close()
-                        return True
-                    time.sleep(0.01)  # Small delay
+                            
+                            # Check for error keywords (log but don't exit unless auto_exit is True)
+                            for keyword in error_keywords:
+                                if keyword.lower() in line_lower:
+                                    error_count += 1
+                                    print(f"\n{Colors.FAIL}⚠ [{error_count}] Error detected: '{keyword}'{Colors.ENDC}")
+                                    if auto_exit:
+                                        print(f"{Colors.WARNING}Stopping monitor due to detected error{Colors.ENDC}")
+                                        ser.close()
+                                        return False  # Error exit
+                                    else:
+                                        print(f"{Colors.WARNING}Continuing monitoring... (use Ctrl+C to exit){Colors.ENDC}")
+                                    break
+                    else:
+                        # Check for timeout (only if auto_exit)
+                        if auto_exit and (time.time() - last_output_time > timeout_seconds):
+                            print(f"\n{Colors.WARNING}⚠ No output for {timeout_seconds} seconds - possible freeze{Colors.ENDC}")
+                            ser.close()
+                            return False  # Error exit
+                        time.sleep(0.01)  # Small delay
+                        
+                except (serial.SerialException, OSError) as e:
+                    # Connection lost during read
+                    print_error(f"\n{Colors.FAIL}Connection lost during read: {e}{Colors.ENDC}")
+                    print_error("Device may have crashed, rebooted, or disconnected")
+                    ser.close()
+                    return False
                     
         except KeyboardInterrupt:
-            print(f"\n{Colors.WARNING}Monitor interrupted by user{Colors.ENDC}")
+            print(f"\n{Colors.OKGREEN}Graceful exit requested by user (Ctrl+C){Colors.ENDC}")
             if 'error_count' in locals() and error_count > 0:
                 print(f"{Colors.WARNING}Total errors detected: {error_count}{Colors.ENDC}")
             ser.close()
-            return True
+            return True  # Graceful exit
             
     except serial.SerialException as e:
         print_error(f"Failed to open serial port: {e}")
@@ -328,7 +438,7 @@ def monitor_serial_direct(port=None, baud=115200, auto_exit=False):
         print_error(f"Serial monitor error: {e}")
         return False
 
-def monitor_project(env, port=None, reset=False, auto_exit=False):
+def monitor_project(env, port=None, reset=False, auto_exit=False, wait_for_reset=False):
     """Monitor serial output from the device.
     
     Args:
@@ -336,6 +446,7 @@ def monitor_project(env, port=None, reset=False, auto_exit=False):
         port: Serial port
         reset: Whether to reset device before monitoring
         auto_exit: If True, monitor until error/crash detected, then exit
+        wait_for_reset: If True, wait for user to reset device before displaying logs
     """
     print_header("MONITORING SERIAL OUTPUT")
     port = port or SERIAL_PORT
@@ -350,12 +461,16 @@ def monitor_project(env, port=None, reset=False, auto_exit=False):
         print(f"{Colors.WARNING}Monitoring until error/crash detected...{Colors.ENDC}")
         print(f"{Colors.WARNING}Press Ctrl+C to exit early{Colors.ENDC}\n")
     else:
-        print(f"{Colors.WARNING}Press Ctrl+] to exit monitor{Colors.ENDC}\n")
+        print(f"{Colors.WARNING}Press Ctrl+C for graceful exit{Colors.ENDC}\n")
     
     # Use direct serial monitoring (works without TTY, better for continuous monitoring)
     if PYSERIAL_AVAILABLE:
         print_step("Using direct serial monitoring (pyserial)...")
-        return monitor_serial_direct(port, BAUD_RATE, auto_exit)
+        result = monitor_serial_direct(port, BAUD_RATE, auto_exit, wait_for_reset)
+        if not result:
+            # Connection lost or error - exit with error code
+            sys.exit(1)
+        return result
     
     # Fallback to idf_monitor for interactive mode (requires TTY)
     cmd = ["idf.py", "-p", port, "monitor"]
@@ -372,16 +487,23 @@ def monitor_project(env, port=None, reset=False, auto_exit=False):
                 print_warning("Or run monitor in an interactive terminal")
                 return False
             # Should have been handled above, but just in case
-            return monitor_serial_direct(port, BAUD_RATE, auto_exit)
+            result = monitor_serial_direct(port, BAUD_RATE, auto_exit, wait_for_reset)
+            if not result:
+                sys.exit(1)
+            return result
                 
     except KeyboardInterrupt:
-        print(f"\n{Colors.WARNING}Monitor interrupted by user{Colors.ENDC}")
+        print(f"\n{Colors.OKGREEN}Graceful exit requested by user (Ctrl+C){Colors.ENDC}")
+        return True
     except Exception as e:
         print_error(f"Monitor error: {e}")
         # Try fallback to direct serial
         if PYSERIAL_AVAILABLE:
             print_step("Falling back to direct serial monitoring...")
-            return monitor_serial_direct(port, BAUD_RATE, auto_exit)
+            result = monitor_serial_direct(port, BAUD_RATE, auto_exit, wait_for_reset)
+            if not result:
+                sys.exit(1)
+            return result
         return False
     
     return True
@@ -632,11 +754,13 @@ Examples:
     if args.flash_only:
         if flash_project(env, args.port, force_download=args.force_download):
             if not args.no_monitor:
-                time.sleep(2)
-                reset_device(args.port)
-                time.sleep(2)
+                print_step("Setting up serial logging...")
+                time.sleep(1)  # Brief pause after flash
                 auto_exit = not args.no_auto_exit  # Default: enabled unless --no-auto-exit
-                monitor_project(env, args.port, reset=False, auto_exit=auto_exit)
+                result = monitor_project(env, args.port, reset=False, auto_exit=auto_exit, wait_for_reset=True)
+                if not result:
+                    # Connection lost or error occurred
+                    sys.exit(1)
         return
     
     # Handle build-only
@@ -664,18 +788,16 @@ Examples:
     
     # Monitor
     if not args.no_monitor:
-        print_step("Waiting for device to stabilize after flash...")
-        time.sleep(3)  # Give device more time to boot after flash
+        print_step("Setting up serial logging...")
+        time.sleep(1)  # Brief pause after flash
         
-        # Reset device to ensure clean boot (but don't fail if reset has issues)
-        print_step("Resetting device for clean boot...")
-        reset_device(args.port, wait_after=True)
-        
-        # Start monitoring - continue even after errors (don't auto-exit)
-        print(f"{Colors.OKCYAN}Starting continuous monitoring...{Colors.ENDC}")
-        print(f"{Colors.WARNING}Errors will be logged but monitoring will continue{Colors.ENDC}")
-        print(f"{Colors.WARNING}Press Ctrl+C to exit{Colors.ENDC}\n")
-        monitor_project(env, args.port, reset=False, auto_exit=False)  # Don't auto-exit on errors
+        # Start monitoring - wait for user to reset device, then display logs
+        # Connection loss (crash, reboot, etc.) will exit with error
+        # Ctrl+C will exit gracefully
+        result = monitor_project(env, args.port, reset=False, auto_exit=False, wait_for_reset=True)
+        if not result:
+            # Connection lost or error occurred
+            sys.exit(1)
 
 if __name__ == "__main__":
     main()

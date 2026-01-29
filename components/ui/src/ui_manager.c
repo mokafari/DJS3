@@ -114,9 +114,16 @@ void ui_manager_handle_crate_select(int index) {
         ESP_LOGI(TAG, "Loading track from UI: index=%d, filename='%s', title='%s', has_id3=%d", 
                  index, info.filename, info.title, info.has_id3);
         
+        // Reset waveform state before loading new track
+        waveform_view_reset();
+        
         // Try to load the file
         if (audio_player_load(info.filename)) {
             ESP_LOGI(TAG, "Track loaded successfully, starting playback");
+            
+            // Immediately update metadata with new track info
+            metadata_view_update(info.title, "4A", 0, 0);
+            
             audio_player_play();
             // Switch back to waveform view after loading
             ui_manager_set_view(UI_VIEW_WAVEFORM);

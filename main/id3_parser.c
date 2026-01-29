@@ -227,11 +227,14 @@ static bool parse_id3v2_frames(const uint8_t *buffer, size_t size, id3_tag_t *ta
  * - Offset 97-126: Comment (30 bytes) or Comment (28) + Track (1) + Zero (1)
  * - Offset 127: Genre (1 byte)
  */
-static bool parse_id3v1_tag(const uint8_t *buffer, id3_tag_t *tag) {
+static bool parse_id3v1_tag(const uint8_t *buffer, id3_tag_t *tag, const char *filepath) {
     // Check for "TAG" identifier
     if (memcmp(buffer, "TAG", 3) != 0) {
+        ESP_LOGW(TAG, "No ID3v1 tag found (no TAG identifier) in: %s", filepath);
         return false;
     }
+    
+    ESP_LOGI(TAG, "Found ID3v1 tag in: %s", filepath);
     
     memset(tag, 0, sizeof(id3_tag_t));
     
@@ -293,9 +296,13 @@ static bool parse_id3v1_tag(const uint8_t *buffer, id3_tag_t *tag) {
     tag->has_tag = true;
     tag->tag_size = 0; // ID3v1 is at end of file, doesn't affect audio offset
     
-    ESP_LOGI(TAG, "Parsed ID3v1 title: '%s', artist: '%s'", tag->title, tag->artist);
-    
-    return (tag->title[0] != '\0'); // Success if we got at least a title
+    if (tag->title[0] != '\0') {
+        ESP_LOGI(TAG, "Parsed ID3v1 title: '%s', artist: '%s'", tag->title, tag->artist);
+        return true;
+    } else {
+        ESP_LOGW(TAG, "ID3v1 tag found but title is empty");
+        return false;
+    }
 }
 
 bool id3_parse_file(const char *filepath, id3_tag_t *tag) {
@@ -355,7 +362,7 @@ bool id3_parse_file(const char *filepath, id3_tag_t *tag) {
     }
     
     // No ID3v2 tag found, try ID3v1 at end of file
-    ESP_LOGD(TAG, "No ID3v2 tag, trying ID3v1 for: %s", filepath);
+    ESP_LOGI(TAG, "No ID3v2 tag, trying ID3v1 for: %s", filepath);
     
     // Seek to last 128 bytes of file
     if (fseek(f, -128, SEEK_END) != 0) {
@@ -371,7 +378,7 @@ bool id3_parse_file(const char *filepath, id3_tag_t *tag) {
     
     fclose(f);
     
-    return parse_id3v1_tag(id3v1_buf, tag);
+    return parse_id3v1_tag(id3v1_buf, tag, filepath);
 }
 
 bool id3_parse_buffer(const uint8_t *buffer, size_t size, id3_tag_t *tag) {

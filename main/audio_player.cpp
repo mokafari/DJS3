@@ -147,6 +147,9 @@ static void internal_stop(void) {
 static bool internal_load(const char *filepath) {
     internal_stop();
     
+    // Clear old track title FIRST to ensure it doesn't persist
+    memset(current_track_title, 0, sizeof(current_track_title));
+    
     // Parse ID3 first to get offsets and metadata
     id3_tag_t tag;
     uint32_t start_offset = 0;
