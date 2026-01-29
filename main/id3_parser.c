@@ -67,47 +67,57 @@ static bool parse_id3v2_header(const uint8_t *buffer, size_t size, id3v2_header_
  * @brief Parse text frame (TIT2, TPE1, TALB, TCON)
  */
 static bool parse_text_frame(const uint8_t *data, size_t size, char *output, size_t output_size) {
-    if (size < 1) return false;
+    if (size < 2) return false;
     
     uint8_t encoding = data[0];
     size_t text_start = 1;
     size_t text_size = size - 1;
     
-    // Skip BOM for UTF-16
-    if (encoding == 1 && text_size >= 2) {
-        if (data[1] == 0xFF && data[2] == 0xFE) {
-            text_start = 3;
-            text_size -= 2;
-        } else if (data[1] == 0xFE && data[2] == 0xFF) {
-            text_start = 3;
-            text_size -= 2;
-        }
-    }
-    
     // Convert encoding
     if (encoding == 0 || encoding == 3) {
         // ISO-8859-1 or UTF-8
         size_t copy_size = (text_size < output_size - 1) ? text_size : output_size - 1;
-        memcpy(output, &data[text_start], copy_size);
-        output[copy_size] = '\0';
-        
-        // Remove null terminators
+        size_t out_idx = 0;
         for (size_t i = 0; i < copy_size; i++) {
-            if (output[i] == '\0') {
-                output[i] = ' ';
+            uint8_t c = data[text_start + i];
+            if (c >= 32 && c < 127) { // Only printable ASCII
+                output[out_idx++] = c;
+            } else if (out_idx > 0 && output[out_idx-1] != ' ') {
+                output[out_idx++] = ' '; // Replace non-printable with space
+            }
+        }
+        output[out_idx] = '\0';
+        return true;
+    } else if (encoding == 1 || encoding == 2) {
+        // UTF-16 with BOM (1) or without BOM (2)
+        // Skip BOM if present
+        if (text_size >= 2) {
+            if ((data[1] == 0xFF && data[2] == 0xFE) || (data[1] == 0xFE && data[2] == 0xFF)) {
+                text_start = 3;
+                text_size -= 2;
             }
         }
         
-        return true;
-    } else if (encoding == 1) {
-        // UTF-16 (simplified - just copy as ASCII for now)
-        // TODO: Implement proper UTF-16 to UTF-8 conversion
-        size_t copy_size = (text_size / 2 < output_size - 1) ? text_size / 2 : output_size - 1;
-        for (size_t i = 0; i < copy_size && (text_start + i * 2 + 1) < size; i++) {
-            output[i] = data[text_start + i * 2 + 1]; // Take high byte (simplified)
-            if (output[i] == 0) output[i] = ' ';
+        // Simplified UTF-16 to ASCII conversion
+        size_t out_idx = 0;
+        for (size_t i = 0; i < text_size && out_idx < output_size - 1; i += 2) {
+            // In UTF-16, characters are 2 bytes. For ASCII range, one byte is the char, other is 0.
+            // We check both bytes and take the non-zero one if it's printable.
+            uint8_t c1 = data[text_start + i];
+            uint8_t c2 = (text_start + i + 1 < size) ? data[text_start + i + 1] : 0;
+            uint8_t c = (c1 != 0) ? c1 : c2;
+            
+            if (c >= 32 && c < 127) {
+                output[out_idx++] = c;
+            }
         }
-        output[copy_size] = '\0';
+        output[out_idx] = '\0';
+        
+        // Trim trailing spaces
+        while (out_idx > 0 && output[out_idx-1] == ' ') {
+            output[--out_idx] = '\0';
+        }
+        
         return true;
     }
     
@@ -141,8 +151,8 @@ static uint16_t parse_numeric_frame(const uint8_t *data, size_t size) {
  * @brief Parse ID3v2 frames
  */
 static bool parse_id3v2_frames(const uint8_t *buffer, size_t size, id3_tag_t *tag, uint8_t version) {
-    size_t offset = 10; // Skip header
-    size_t remaining = size - offset;
+    size_t offset = 0; // Buffer starts at frame data (after header)
+    size_t remaining = size;
     
     memset(tag, 0, sizeof(id3_tag_t));
     
@@ -156,7 +166,9 @@ static bool parse_id3v2_frames(const uint8_t *buffer, size_t size, id3_tag_t *ta
         }
         
         // Read frame size
-        if (version == 4) {
+        // ID3v2.4 uses synchsafe (7-bit) integers for frame size
+        // ID3v2.3 uses regular 32-bit integers
+        if (version >= 4) {
             frame.size = read_synchsafe(&buffer[offset + 4]);
         } else {
             frame.size = read_uint32(&buffer[offset + 4]);
@@ -164,7 +176,12 @@ static bool parse_id3v2_frames(const uint8_t *buffer, size_t size, id3_tag_t *ta
         
         frame.flags = (buffer[offset + 8] << 8) | buffer[offset + 9];
         
+        char id_str[5] = {0};
+        memcpy(id_str, frame.frame_id, 4);
+        ESP_LOGD(TAG, "Found frame: %s, size: %lu", id_str, frame.size);
+
         if (frame.size == 0 || frame.size > remaining - 10) {
+            ESP_LOGW(TAG, "Invalid frame size for %s: %lu (remaining: %zu)", id_str, frame.size, remaining);
             break;
         }
         
@@ -174,6 +191,7 @@ static bool parse_id3v2_frames(const uint8_t *buffer, size_t size, id3_tag_t *ta
         // Parse known frames
         if (memcmp(frame.frame_id, "TIT2", 4) == 0) {
             parse_text_frame(frame_data, frame_data_size, tag->title, sizeof(tag->title));
+            ESP_LOGI(TAG, "Found title: %s", tag->title);
         } else if (memcmp(frame.frame_id, "TPE1", 4) == 0) {
             parse_text_frame(frame_data, frame_data_size, tag->artist, sizeof(tag->artist));
         } else if (memcmp(frame.frame_id, "TALB", 4) == 0) {

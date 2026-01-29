@@ -151,6 +151,13 @@ void audio_player_set_granular_pitch(float pitch);
 void audio_player_set_granular_jitter(float jitter);
 
 /**
+ * @brief Set output gain (volume)
+ * 
+ * @param gain Gain multiplier (0.0 to 1.0)
+ */
+void audio_player_set_gain(float gain);
+
+/**
  * @brief Get the title of the current track (or filename if no tag)
  * 
  * @return const char* Track title or empty string

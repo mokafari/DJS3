@@ -96,23 +96,8 @@ size_t audio_output_write(const int16_t *samples, size_t count) {
     size_t bytes_written = 0;
     size_t bytes_to_write = count * sizeof(int16_t);
     
-    // Simple software volume application (if gain != 1.0)
-    // Note: In a real efficient engine, this should be done during mixing/decoding
-    if (volume_gain != 1.0f) {
-        // This is slow, modify buffer in place or copy
-        // For now, assuming input buffer is modifiable or we write raw
-        // Just write raw for now to save cycles
-    }
-
-    // Use small timeout to prevent blocking the UI loop
-    // If buffer is full, we simply return what was written. 
-    // The decoder loop should handle partial writes or just try again next loop.
-    esp_err_t ret = i2s_channel_write(tx_handle, samples, bytes_to_write, &bytes_written, pdMS_TO_TICKS(10));
-    
-    if (ret != ESP_OK && ret != ESP_ERR_TIMEOUT) {
-        // Log actual errors, but ignore timeout (buffer full)
-        ESP_LOGW(TAG, "I2S write warning: %s", esp_err_to_name(ret));
-    }
+    // Blocking write is safe here because we are in a dedicated task
+    i2s_channel_write(tx_handle, samples, bytes_to_write, &bytes_written, portMAX_DELAY);
     
     return bytes_written / sizeof(int16_t);
 }
