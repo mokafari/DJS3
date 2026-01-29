@@ -84,10 +84,11 @@ void ui_manager_update_telemetry(float bpm, float pitch, float phase_error);
  * @brief Update track metadata
  * 
  * @param title Track title
- * @param key Musical key (Camelot notation, e.g., "4A")
- * @param time_remaining Time remaining in seconds (negative for elapsed)
+ * @param key Musical key
+ * @param position Current position in seconds
+ * @param duration Total duration in seconds
  */
-void ui_manager_update_metadata(const char *title, const char *key, int32_t time_remaining);
+void ui_manager_update_metadata(const char *title, const char *key, uint32_t position, uint32_t duration);
 
 /**
  * @brief Update beat grid lines

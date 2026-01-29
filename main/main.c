@@ -534,14 +534,16 @@ void app_main(void)
                 ui_manager_update_telemetry(bpm, pitch, phase_error);
                 
                 // Update metadata
-                const char *title = audio_player_get_track_title();
+                const char *title = "Track Playing"; // Placeholder
+                if (track_db_get_count() > 0) {
+                    title = audio_player_get_track_title();
+                }
                 
                 const char *key = "4A"; // Placeholder
-                int32_t time_remaining = dur > pos ? (int32_t)(dur - pos) : -(int32_t)pos;
-                ui_manager_update_metadata(title, key, time_remaining);
+                ui_manager_update_metadata(title, key, pos, dur);
                 } else {
                     // Clear UI when not playing
-                    ui_manager_update_metadata("No Track", "--", 0);
+                    ui_manager_update_metadata("No Track", "--", 0, 0);
                     ui_manager_update_telemetry(0.0f, 0.0f, 0.0f);
                 }
             }

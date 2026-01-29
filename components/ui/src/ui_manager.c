@@ -169,9 +169,9 @@ void ui_manager_update_telemetry(float bpm, float pitch, float phase_error) {
     telemetry_view_update(bpm, pitch, phase_error);
 }
 
-void ui_manager_update_metadata(const char *title, const char *key, int32_t time_remaining) {
+void ui_manager_update_metadata(const char *title, const char *key, uint32_t position, uint32_t duration) {
     if (!s_initialized) return;
-    metadata_view_update(title, key, time_remaining);
+    metadata_view_update(title, key, position, duration);
 }
 
 void ui_manager_update_grid(const float *beat_positions, size_t num_beats) {

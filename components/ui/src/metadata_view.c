@@ -27,13 +27,28 @@ static uint32_t view_width = 0;
 static uint32_t view_height = 0;
 static char title_buffer[256] = {0};
 
+static bool show_elapsed = false; // Default to remaining time
+static uint32_t last_pos = 0;
+static uint32_t last_dur = 0;
+
+static void time_click_handler(lv_event_t *e) {
+    lv_event_code_t code = lv_event_get_code(e);
+    if (code == LV_EVENT_CLICKED) {
+        show_elapsed = !show_elapsed;
+        metadata_view_update(NULL, NULL, last_pos, last_dur);
+    }
+}
+
 static void metadata_event_handler(lv_event_t *e) {
     lv_event_code_t code = lv_event_get_code(e);
     if (code == LV_EVENT_CLICKED) {
-        // Toggle view logic
-        static bool is_crate = false;
-        is_crate = !is_crate;
-        ui_manager_set_view(is_crate ? UI_VIEW_CRATE : UI_VIEW_WAVEFORM);
+        // Only toggle view if we didn't click the time label
+        lv_obj_t *target = lv_event_get_target(e);
+        if (target != time_label) {
+            static bool is_crate = false;
+            is_crate = !is_crate;
+            ui_manager_set_view(is_crate ? UI_VIEW_CRATE : UI_VIEW_WAVEFORM);
+        }
     }
 }
 
@@ -69,6 +84,8 @@ void metadata_view_init(uint32_t width, uint32_t height) {
     lv_obj_add_style(time_label, style_phosphor, 0);
     lv_label_set_text(time_label, "-00:00");
     lv_obj_align(time_label, LV_ALIGN_RIGHT_MID, -10, 0);
+    lv_obj_add_flag(time_label, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(time_label, time_click_handler, LV_EVENT_CLICKED, NULL);
     
     // Key (Camelot notation, center right)
     key_label = lv_label_create(metadata_container);
@@ -82,8 +99,12 @@ void metadata_view_init(uint32_t width, uint32_t height) {
     ESP_LOGI(TAG, "Metadata view created and invalidated");
 }
 
-void metadata_view_update(const char *title, const char *key, int32_t time_remaining) {
+void metadata_view_update(const char *title, const char *key, uint32_t position, uint32_t duration) {
     if (!metadata_container) return;
+    
+    // Store for toggle
+    last_pos = position;
+    last_dur = duration;
     
     // Update title
     if (title_label && title) {
@@ -97,20 +118,25 @@ void metadata_view_update(const char *title, const char *key, int32_t time_remai
         lv_label_set_text(key_label, key);
     }
     
-    // Update time remaining
+    // Update time
     if (time_label) {
         char time_str[16];
-        int32_t abs_time = abs(time_remaining);
-        int minutes = abs_time / 60;
-        int seconds = abs_time % 60;
+        int32_t display_seconds;
         
-        if (time_remaining < 0) {
-            snprintf(time_str, sizeof(time_str), "-%02d:%02d", minutes, seconds);
+        if (show_elapsed) {
+            display_seconds = (int32_t)position;
+            int minutes = display_seconds / 60;
+            int seconds = display_seconds % 60;
+            snprintf(time_str, sizeof(time_str), "%02d:%02d", minutes, seconds);
         } else {
-            snprintf(time_str, sizeof(time_str), "+%02d:%02d", minutes, seconds);
+            // Remaining time
+            display_seconds = (int32_t)duration - (int32_t)position;
+            if (display_seconds < 0) display_seconds = 0;
+            int minutes = display_seconds / 60;
+            int seconds = display_seconds % 60;
+            snprintf(time_str, sizeof(time_str), "-%02d:%02d", minutes, seconds);
         }
         
         lv_label_set_text(time_label, time_str);
     }
 }
-
