@@ -51,6 +51,9 @@ static uint32_t current_position_seconds = 0;
 static uint32_t total_duration_seconds = 0;
 static float current_gain = 0.5f;
 static uint32_t current_sample_rate = 44100;
+static uint32_t current_bitrate = 0;           // Actual bitrate from MP3 frame header
+static bool duration_calculated = false;        // True once we've calculated real duration
+static size_t audio_data_size = 0;              // File size minus ID3 tags
 
 static volatile uint64_t total_bytes_played = 0;
 
@@ -146,6 +149,9 @@ static void internal_stop(void) {
         mp3_file = NULL;
     }
     player_state = AUDIO_PLAYER_STATE_STOPPED;
+    current_bitrate = 0;
+    duration_calculated = false;
+    audio_data_size = 0;
     internal_reset_buffer();
 }
 
@@ -204,8 +210,15 @@ static bool internal_load(const char *filepath) {
     
     strncpy(current_filepath, filepath, sizeof(current_filepath) - 1);
     
-    total_duration_seconds = (file_size - start_offset) / (128 * 1024 / 8); 
+    // Store audio data size (file size minus ID3 tags) for duration calculation
+    audio_data_size = file_size - start_offset;
+    
+    // Initial estimate at 192kbps (common bitrate) - will be refined after first frame decode
+    // Formula: duration = bytes / (bitrate_kbps * 1000 / 8) = bytes * 8 / (bitrate_kbps * 1000)
+    total_duration_seconds = (audio_data_size * 8) / (192 * 1000);
     current_position_seconds = 0;
+    current_bitrate = 0;
+    duration_calculated = false;
     
     // Start buffering immediately
     player_state = AUDIO_PLAYER_STATE_PAUSED; // Loaded but paused
@@ -267,6 +280,16 @@ static void decoder_task(void *pvParameters) {
                     if (frameInfo.samprate != (int)current_sample_rate && frameInfo.samprate > 0) {
                         current_sample_rate = frameInfo.samprate;
                         audio_output_set_rate(current_sample_rate);
+                    }
+                    
+                    // Calculate accurate duration using actual bitrate from first frame
+                    if (!duration_calculated && frameInfo.bitrate > 0) {
+                        current_bitrate = frameInfo.bitrate;
+                        // duration = audio_bytes * 8 / bitrate_bps
+                        total_duration_seconds = (audio_data_size * 8) / current_bitrate;
+                        duration_calculated = true;
+                        ESP_LOGI("audio_player", "Duration calculated: %us (bitrate: %d kbps, audio size: %zu bytes)",
+                                 total_duration_seconds, current_bitrate / 1000, audio_data_size);
                     }
 
                     size_t pcm_bytes = frameInfo.outputSamps * sizeof(int16_t);
