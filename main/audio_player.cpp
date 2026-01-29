@@ -113,6 +113,10 @@ static bool internal_load(const char *filepath) {
     read_ptr = read_buffer;
     fill_read_buffer();
     
+    // Reset waveform history
+    waveform_peak_idx = 0;
+    memset(waveform_peaks, 0, sizeof(waveform_peaks));
+    
     strncpy(current_filepath, filepath, sizeof(current_filepath) - 1);
     
     id3_tag_t tag;

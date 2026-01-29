@@ -85,6 +85,11 @@ static uint32_t scan_directory(const char *path, uint32_t start_index) {
             continue;
         }
         
+        // Skip MacOS metadata files
+        if (strncmp(entry->d_name, "._", 2) == 0) {
+            continue;
+        }
+        
         // Build full path
         snprintf(full_path, 512, "%s/%s", path, entry->d_name);
         

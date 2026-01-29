@@ -183,15 +183,15 @@ void waveform_view_init(uint32_t width, uint32_t height) {
     lv_obj_set_style_border_width(playhead_line, 0, 0);
     lv_obj_clear_flag(playhead_line, LV_OBJ_FLAG_CLICKABLE);
     
-    // Progress Bar (bottom 4px)
+    // Progress Bar (bottom 8px)
     progress_bar_bg = lv_obj_create(waveform_container);
-    lv_obj_set_size(progress_bar_bg, view_width, 4);
+    lv_obj_set_size(progress_bar_bg, view_width, 8);
     lv_obj_set_align(progress_bar_bg, LV_ALIGN_BOTTOM_MID);
     lv_obj_set_style_bg_color(progress_bar_bg, lv_color_hex(0x333333), 0);
     lv_obj_set_style_border_width(progress_bar_bg, 0, 0);
     
     progress_bar_cursor = lv_obj_create(progress_bar_bg);
-    lv_obj_set_size(progress_bar_cursor, 40, 4); // Small cursor
+    lv_obj_set_size(progress_bar_cursor, 40, 8); // Small cursor
     lv_obj_set_style_bg_color(progress_bar_cursor, hud_theme_get_foreground_color(), 0);
     lv_obj_set_style_border_width(progress_bar_cursor, 0, 0);
     
@@ -212,6 +212,7 @@ void waveform_view_update(const uint8_t *waveform_data,
         if (cursor_x < 0) cursor_x = 0;
         if (cursor_x > max_x) cursor_x = max_x;
         lv_obj_set_x(progress_bar_cursor, cursor_x);
+        lv_obj_invalidate(progress_bar_bg);
     }
     
     // Draw waveform

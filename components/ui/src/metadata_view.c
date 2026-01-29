@@ -85,6 +85,7 @@ void metadata_view_init(uint32_t width, uint32_t height) {
     lv_label_set_text(time_label, "-00:00");
     lv_obj_align(time_label, LV_ALIGN_RIGHT_MID, -10, 0);
     lv_obj_add_flag(time_label, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_pad_all(time_label, 10, 0); // Increase touch area
     lv_obj_add_event_cb(time_label, time_click_handler, LV_EVENT_CLICKED, NULL);
     
     // Key (Camelot notation, center right)
