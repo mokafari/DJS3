@@ -254,7 +254,8 @@ bool id3_parse_file(const char *filepath, id3_tag_t *tag) {
     // Parse frames
     bool result = parse_id3v2_frames(tag_data, tag_size, tag, header.version_major);
     if (result) {
-        ESP_LOGI(TAG, "Parsed title: %s", tag->title);
+        tag->tag_size = tag_size + 10; // Header (10) + Body
+        ESP_LOGI(TAG, "Parsed title: %s (Tag size: %lu)", tag->title, tag->tag_size);
     }
     
     free(tag_data);

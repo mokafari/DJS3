@@ -434,6 +434,12 @@ void app_main(void)
 
                 ESP_LOGI(TAG, "UI theme set");
 
+                // Refresh crate view with scanned tracks
+                if (track_db_ok && track_db_get_count() > 0) {
+                    ESP_LOGI(TAG, "Refreshing crate view with %lu tracks", track_db_get_count());
+                    ui_manager_refresh_crate();
+                }
+
             }
 
         } else {

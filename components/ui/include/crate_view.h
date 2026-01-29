@@ -18,6 +18,8 @@ void crate_view_show(void);
 void crate_view_hide(void);
 void crate_view_set_tracks(const char **tracks, size_t num_tracks);
 void crate_view_set_selection(int index);
+void crate_view_cleanup(void);
+void crate_view_refresh_tracks(void);
 
 #ifdef __cplusplus
 }

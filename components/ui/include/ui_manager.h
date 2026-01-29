@@ -132,6 +132,11 @@ void ui_manager_trigger_nudge_animation(void);
  */
 void ui_manager_handle_crate_select(int index);
 
+/**
+ * @brief Refresh crate view with latest tracks from database
+ */
+void ui_manager_refresh_crate(void);
+
 #ifdef __cplusplus
 }
 #endif

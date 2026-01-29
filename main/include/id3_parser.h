@@ -24,6 +24,7 @@ typedef struct {
     char genre[64];
     uint16_t year;
     uint8_t track;
+    uint32_t tag_size; // Size of the ID3v2 tag in bytes (including header)
     bool has_tag;
 } id3_tag_t;
 

@@ -52,35 +52,24 @@ static void draw_waveform(const uint8_t *waveform_data, size_t num_samples, floa
     if (!buffer) return;
     
     // Fast clear with memset (assuming black is 0)
-    // Note: lv_color_t might be 16-bit or 32-bit. 
-    // If black is 0x0000, memset works.
     size_t buffer_size_bytes = view_width * view_height * sizeof(lv_color_t);
     memset(buffer, 0, buffer_size_bytes); 
     
     lv_color_t fg_color = hud_theme_get_foreground_color();
     int center_y = view_height / 2;
-    int center_x = view_width / 2;
     
     // Draw scrolling waveform
-    // The data in waveform_data[0..num_samples-1] represents the *latest* history.
-    // waveform_data[num_samples-1] is the newest sample (at playhead).
-    // waveform_data[0] is the oldest sample (far left).
-    // We want to draw this history to the LEFT of the center playhead.
+    // waveform_data is now CENTERED around the playhead.
+    // Index num_samples/2 is the playhead.
+    // Index 0 is the far past.
+    // Index num_samples-1 is the far future.
+    // We map 1:1 to screen X.
     
     if (waveform_data && num_samples > 0) {
-        // Iterate backwards from the playhead (center_x) to the left
-        for (int x = 0; x < center_x; x++) {
-            // Map screen X to sample index
-            // At x = center_x, we want sample_idx = num_samples - 1 (newest)
-            // At x = center_x - 1, we want sample_idx = num_samples - 2
-            // So: sample_idx = num_samples - 1 - (center_x - x)
+        for (int x = 0; x < view_width && x < num_samples; x++) {
+            uint8_t peak = waveform_data[x];
             
-            int offset_from_center = center_x - x;
-            int sample_idx = (int)num_samples - 1 - offset_from_center;
-            
-            if (sample_idx >= 0 && sample_idx < (int)num_samples) {
-                uint8_t peak = waveform_data[sample_idx];
-                
+            if (peak > 0) {
                 // Scale height
                 int bar_height = (peak * waveform_height) / 255;
                 if (bar_height < 1) bar_height = 1; // Min 1px

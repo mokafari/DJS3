@@ -70,21 +70,27 @@ int ui_manager_init(uint32_t width, uint32_t height) {
     ESP_LOGI(TAG, "Metadata view initialized");
     
     // Populate crate view with tracks from DB
+    // Note: crate_view_set_tracks now copies the strings internally, so we can free them
     uint32_t track_count = track_db_get_count();
     if (track_count > 0) {
         const char **track_names = (const char**)malloc(track_count * sizeof(char*));
-        for (uint32_t i = 0; i < track_count; i++) {
-            track_info_t info;
-            if (track_db_get_track(i, &info)) {
-                track_names[i] = strdup(info.title);
-            } else {
-                track_names[i] = "Unknown";
+        if (track_names) {
+            for (uint32_t i = 0; i < track_count; i++) {
+                track_info_t info;
+                if (track_db_get_track(i, &info)) {
+                    track_names[i] = strdup(info.title);
+                } else {
+                    track_names[i] = strdup("Unknown");
+                }
             }
+            crate_view_set_tracks(track_names, track_count);
+            
+            // Free the temporary array (crate_view now owns the copied strings)
+            for (uint32_t i = 0; i < track_count; i++) {
+                free((void*)track_names[i]);
+            }
+            free(track_names);
         }
-        crate_view_set_tracks(track_names, track_count);
-        // Note: track_names elements were duplicated, crate_view should manage them or we leak
-        // For now, assume crate_view doesn't copy but uses them. 
-        // Actually crate_view should probably copy.
     }
     
     // Show initial view
@@ -210,5 +216,10 @@ void ui_manager_trigger_nudge_animation(void) {
     // Reset after animation
     nudge_offset = 0;
     nudge_animating = false;
+}
+
+void ui_manager_refresh_crate(void) {
+    if (!s_initialized) return;
+    crate_view_refresh_tracks();
 }
 

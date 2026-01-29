@@ -7,6 +7,7 @@
 #include "hud_theme.h"
 #include "lvgl_driver.h"
 #include "ui_manager.h"
+#include "track_db.h"
 #include "esp_log.h"
 #include "lvgl.h"
 #include <string.h>
@@ -17,7 +18,7 @@ static const char *TAG = "crate_view";
 static lv_obj_t *crate_container = NULL;
 static lv_obj_t *track_list = NULL;
 static lv_obj_t **track_items = NULL;
-static const char **track_names = NULL;
+static char **track_names = NULL;  // Changed to char** to manage memory
 static size_t num_tracks = 0;
 static int selected_index = -1;
 static bool visible = false;
@@ -131,7 +132,7 @@ void crate_view_hide(void) {
 void crate_view_set_tracks(const char **tracks, size_t num_tracks_in) {
     if (!track_list) return;
     
-    // Free old items
+    // Free old items and track names
     if (track_items) {
         for (size_t i = 0; i < num_tracks; i++) {
             if (track_items[i]) {
@@ -142,24 +143,67 @@ void crate_view_set_tracks(const char **tracks, size_t num_tracks_in) {
         track_items = NULL;
     }
     
+    // Free old track name strings
+    if (track_names) {
+        for (size_t i = 0; i < num_tracks; i++) {
+            if (track_names[i]) {
+                free(track_names[i]);
+            }
+        }
+        free(track_names);
+        track_names = NULL;
+    }
+    
     num_tracks = num_tracks_in;
-    track_names = tracks;
     
     if (num_tracks == 0) {
+        selected_index = -1;
         return;
+    }
+    
+    // Allocate track names array
+    track_names = (char**)calloc(num_tracks, sizeof(char*));
+    if (!track_names) {
+        ESP_LOGE(TAG, "Failed to allocate track names array");
+        return;
+    }
+    
+    // Copy track name strings
+    for (size_t i = 0; i < num_tracks; i++) {
+        if (tracks[i]) {
+            track_names[i] = strdup(tracks[i]);
+            if (!track_names[i]) {
+                ESP_LOGE(TAG, "Failed to duplicate track name %zu", i);
+                // Clean up on failure
+                for (size_t j = 0; j < i; j++) {
+                    free(track_names[j]);
+                }
+                free(track_names);
+                track_names = NULL;
+                return;
+            }
+        } else {
+            track_names[i] = NULL;
+        }
     }
     
     // Allocate item array
     track_items = (lv_obj_t**)calloc(num_tracks, sizeof(lv_obj_t*));
     if (!track_items) {
         ESP_LOGE(TAG, "Failed to allocate track items array");
+        // Clean up track names
+        for (size_t i = 0; i < num_tracks; i++) {
+            free(track_names[i]);
+        }
+        free(track_names);
+        track_names = NULL;
         return;
     }
     
     // Create list items
     for (size_t i = 0; i < num_tracks; i++) {
-        if (tracks[i]) {
-            track_items[i] = lv_list_add_btn(track_list, NULL, tracks[i]);
+        if (track_names[i]) {
+            track_items[i] = lv_list_add_btn(track_list, NULL, track_names[i]);
             lv_obj_add_style(track_items[i], &style_normal, 0);
             lv_obj_set_style_text_font(track_items[i], &lv_font_montserrat_14, 0);
             // Add click event to each button
@@ -190,4 +234,74 @@ void crate_view_set_selection(int index) {
         // Scroll to selected item
         lv_obj_scroll_to_view(track_items[selected_index], LV_ANIM_ON);
     }
+}
+
+void crate_view_cleanup(void) {
+    // Free track items
+    if (track_items) {
+        for (size_t i = 0; i < num_tracks; i++) {
+            if (track_items[i]) {
+                lv_obj_del(track_items[i]);
+            }
+        }
+        free(track_items);
+        track_items = NULL;
+    }
+    
+    // Free track name strings
+    if (track_names) {
+        for (size_t i = 0; i < num_tracks; i++) {
+            if (track_names[i]) {
+                free(track_names[i]);
+            }
+        }
+        free(track_names);
+        track_names = NULL;
+    }
+    
+    num_tracks = 0;
+    selected_index = -1;
+}
+
+void crate_view_refresh_tracks(void) {
+    if (!track_list) return;
+    
+    // Get track count from database
+    uint32_t track_count = track_db_get_count();
+    if (track_count == 0) {
+        crate_view_cleanup();
+        return;
+    }
+    
+    // Allocate array for track names
+    const char **track_names_array = (const char**)malloc(track_count * sizeof(char*));
+    if (!track_names_array) {
+        ESP_LOGE(TAG, "Failed to allocate track names array for refresh");
+        return;
+    }
+    
+    // Get track info from database
+    for (uint32_t i = 0; i < track_count; i++) {
+        track_info_t info;
+        if (track_db_get_track(i, &info)) {
+            track_names_array[i] = strdup(info.title);
+            if (!track_names_array[i]) {
+                ESP_LOGE(TAG, "Failed to duplicate track name %lu", i);
+                // Clean up on failure
+                for (uint32_t j = 0; j < i; j++) {
+                    free((void*)track_names_array[j]);
+                }
+                free(track_names_array);
+                return;
+            }
+        } else {
+            track_names_array[i] = strdup("Unknown");
+        }
+    }
+    
+    // Update crate view with new tracks
+    crate_view_set_tracks(track_names_array, track_count);
+    
+    // Free the temporary array (crate_view now owns the strings)
+    free(track_names_array);
 }

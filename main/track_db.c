@@ -23,17 +23,23 @@ static uint32_t track_count = 0;
 static void parse_id3_tag(const char *filepath, track_info_t *info) {
     id3_tag_t *tag = (id3_tag_t*)malloc(sizeof(id3_tag_t));
     if (!tag) {
+        ESP_LOGW(TAG, "Failed to allocate memory for ID3 tag parsing: %s", filepath);
         info->has_id3 = false;
         return;
     }
     
+    memset(tag, 0, sizeof(id3_tag_t));
+    
     if (id3_parse_file(filepath, tag)) {
         info->has_id3 = true;
         
-        // Copy title
+        // Copy title - ensure it's properly null-terminated
         if (tag->title[0] != '\0') {
             strncpy(info->title, tag->title, sizeof(info->title) - 1);
             info->title[sizeof(info->title) - 1] = '\0';
+            ESP_LOGD(TAG, "ID3 title parsed: %s", info->title);
+        } else {
+            ESP_LOGD(TAG, "ID3 tag found but title is empty: %s", filepath);
         }
         
         // Copy artist
@@ -42,6 +48,7 @@ static void parse_id3_tag(const char *filepath, track_info_t *info) {
             info->artist[sizeof(info->artist) - 1] = '\0';
         }
     } else {
+        ESP_LOGD(TAG, "No ID3 tag found or parsing failed: %s", filepath);
         info->has_id3 = false;
     }
     
@@ -58,6 +65,37 @@ static bool is_mp3_file(const char *filename) {
     }
     const char *ext = filename + len - 4;
     return (strcasecmp(ext, ".mp3") == 0);
+}
+
+/**
+ * @brief Sanitize filename by removing non-printable characters
+ */
+static void sanitize_filename(char *filename, size_t max_len) {
+    if (!filename || max_len == 0) return;
+    
+    size_t len = strlen(filename);
+    size_t out_idx = 0;
+    
+    for (size_t i = 0; i < len && out_idx < max_len - 1; i++) {
+        unsigned char c = (unsigned char)filename[i];
+        // Keep printable ASCII characters (32-126) and allow some common extended chars
+        if (c >= 32 && c < 127) {
+            filename[out_idx++] = c;
+        } else if (c == '\t' || c == '\n' || c == '\r') {
+            // Replace whitespace with space
+            if (out_idx > 0 && filename[out_idx - 1] != ' ') {
+                filename[out_idx++] = ' ';
+            }
+        }
+        // Skip other non-printable characters
+    }
+    
+    filename[out_idx] = '\0';
+    
+    // Trim trailing spaces
+    while (out_idx > 0 && filename[out_idx - 1] == ' ') {
+        filename[--out_idx] = '\0';
+    }
 }
 
 /**
@@ -85,8 +123,21 @@ static uint32_t scan_directory(const char *path, uint32_t start_index) {
             continue;
         }
         
-        // Skip MacOS metadata files
+        // Skip MacOS metadata files (._*)
         if (strncmp(entry->d_name, "._", 2) == 0) {
+            continue;
+        }
+        
+        // Skip files starting with just "_" (system files, invalid entries)
+        if (entry->d_name[0] == '_') {
+            ESP_LOGD(TAG, "Skipping file starting with '_': %s", entry->d_name);
+            continue;
+        }
+        
+        // Skip files with invalid length (too short or too long)
+        size_t name_len = strlen(entry->d_name);
+        if (name_len < 5 || name_len > 255) {
+            ESP_LOGD(TAG, "Skipping file with invalid length (%zu): %s", name_len, entry->d_name);
             continue;
         }
         
@@ -110,14 +161,41 @@ static uint32_t scan_directory(const char *path, uint32_t start_index) {
                 // Try to parse ID3 tag
                 parse_id3_tag(full_path, track);
                 
-                // Use filename as title if no ID3
-                if (!track->has_id3 || track->title[0] == '\0') {
+                // Use filename as title only if ID3 parsing completely failed
+                // If ID3 exists but title is empty, try artist as fallback, then filename
+                if (!track->has_id3) {
+                    // No ID3 tag at all - use filename
                     strncpy(track->title, entry->d_name, sizeof(track->title) - 1);
+                    track->title[sizeof(track->title) - 1] = '\0';
                     // Remove .mp3 extension
                     size_t len = strlen(track->title);
                     if (len > 4 && strcasecmp(track->title + len - 4, ".mp3") == 0) {
                         track->title[len - 4] = '\0';
                     }
+                    // Sanitize filename (remove non-printable chars, handle long names)
+                    sanitize_filename(track->title, sizeof(track->title));
+                    ESP_LOGD(TAG, "Using filename as title: %s", track->title);
+                } else if (track->title[0] == '\0') {
+                    // ID3 exists but title is empty - try artist, then filename
+                    if (track->artist[0] != '\0') {
+                        strncpy(track->title, track->artist, sizeof(track->title) - 1);
+                        track->title[sizeof(track->title) - 1] = '\0';
+                        ESP_LOGD(TAG, "Using artist as title fallback: %s", track->title);
+                    } else {
+                        // No artist either - use filename
+                        strncpy(track->title, entry->d_name, sizeof(track->title) - 1);
+                        track->title[sizeof(track->title) - 1] = '\0';
+                        // Remove .mp3 extension
+                        size_t len = strlen(track->title);
+                        if (len > 4 && strcasecmp(track->title + len - 4, ".mp3") == 0) {
+                            track->title[len - 4] = '\0';
+                        }
+                        // Sanitize filename
+                        sanitize_filename(track->title, sizeof(track->title));
+                        ESP_LOGD(TAG, "Using filename as title (ID3 exists but empty): %s", track->title);
+                    }
+                } else {
+                    ESP_LOGD(TAG, "Using ID3 title: %s", track->title);
                 }
                 
                 count++;
