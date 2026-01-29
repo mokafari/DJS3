@@ -54,6 +54,10 @@ static uint32_t current_sample_rate = 44100;
 
 static volatile uint64_t total_bytes_played = 0;
 
+// Monotonic waveform index counter (never wraps during playback)
+// Used for smooth scroll delta calculations
+static volatile uint64_t waveform_monotonic_index = 0;
+
 // Player State
 static audio_player_state_t player_state = AUDIO_PLAYER_STATE_STOPPED;
 static audio_player_mode_t player_mode = AUDIO_PLAYER_MODE_SIMPLE;
@@ -125,6 +129,7 @@ static void internal_reset_buffer(void) {
     rb_read_head = 0;
     rb_available = 0;
     total_bytes_played = 0;
+    waveform_monotonic_index = 0;  // Reset monotonic counter for new track
     // Pre-fill waveform with silence (128 = center/zero, or 0 for amplitude mode)
     // We are using amplitude mode (0-255), so 0 is silence.
     memset(waveform_ring_buffer, 0, WAVEFORM_BUFFER_SIZE);
@@ -353,6 +358,8 @@ static void playback_task(void *pvParameters) {
                 rb_read_head = (rb_read_head + bytes_to_read) % RING_BUFFER_SIZE;
                 rb_available -= bytes_to_read;
                 total_bytes_played += bytes_to_read;
+                // Update monotonic waveform index (bytes / WAVEFORM_RATIO)
+                waveform_monotonic_index = total_bytes_played / WAVEFORM_RATIO;
             }
             xSemaphoreGive(buffer_mutex);
         }
@@ -442,11 +449,9 @@ void audio_player_get_waveform(uint8_t *buffer, size_t size) {
 }
 
 size_t audio_player_get_waveform_index(void) {
-    size_t idx;
-    xSemaphoreTake(buffer_mutex, portMAX_DELAY);
-    idx = rb_read_head / WAVEFORM_RATIO;
-    xSemaphoreGive(buffer_mutex);
-    return idx;
+    // Return monotonic index for stable scroll delta calculations
+    // This never wraps during playback (unlike rb_read_head which wraps with ring buffer)
+    return (size_t)waveform_monotonic_index;
 }
 
 // Wrappers for commands

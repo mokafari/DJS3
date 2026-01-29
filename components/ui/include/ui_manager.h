@@ -144,6 +144,22 @@ void ui_manager_handle_crate_select(int index);
  */
 void ui_manager_refresh_crate(void);
 
+/**
+ * @brief Set waveform resolution for performance tuning
+ * 
+ * Higher divider = fewer bars = better performance, lower detail
+ * 
+ * @param divider Resolution divider (1=480 bars, 2=240, 4=120, 8=60)
+ */
+void ui_manager_set_waveform_resolution(int divider);
+
+/**
+ * @brief Get current waveform resolution divider
+ * 
+ * @return Current resolution divider (1-8)
+ */
+int ui_manager_get_waveform_resolution(void);
+
 #ifdef __cplusplus
 }
 #endif

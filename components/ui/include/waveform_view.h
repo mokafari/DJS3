@@ -22,6 +22,22 @@ void waveform_view_update_grid(const float *beat_positions, size_t num_beats);
 void waveform_view_show_cursor(float position, bool visible);
 void waveform_view_reset(void);
 
+/**
+ * @brief Set waveform resolution divider for performance tuning
+ * 
+ * Higher divider = fewer bars = better performance, lower detail
+ * 
+ * @param divider Resolution divider (1=480 bars, 2=240, 4=120, 8=60)
+ */
+void waveform_view_set_resolution(int divider);
+
+/**
+ * @brief Get current waveform resolution divider
+ * 
+ * @return Current resolution divider (1-8)
+ */
+int waveform_view_get_resolution(void);
+
 #ifdef __cplusplus
 }
 #endif

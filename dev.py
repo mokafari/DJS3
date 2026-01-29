@@ -357,8 +357,10 @@ def monitor_serial_direct(port=None, baud=115200, auto_exit=False, wait_for_rese
         ]
         
         # Separate list for warnings that should be logged but not trigger auto-exit
+        # Note: "E (" is ESP-IDF's standard error logging prefix (e.g., "E (1234) component: message")
+        # and is normal logging output, not a warning condition, so we don't flag it
         warning_keywords = [
-            "E ("  # ESP-IDF error prefix - log but don't auto-exit
+            # Add any actual warning patterns here if needed
         ]
         
         last_output_time = time.time()

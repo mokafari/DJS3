@@ -19,6 +19,11 @@ static const char *TAG = "waveform_view";
 #define WAVEFORM_BARS 480
 #define GRID_DOT_SPACING 4
 
+// Compile-time default resolution (can be overridden at runtime)
+#ifndef WAVEFORM_DEFAULT_RESOLUTION
+#define WAVEFORM_DEFAULT_RESOLUTION 1  // 1=full, 2=half, 4=quarter, 8=eighth
+#endif
+
 static lv_obj_t *waveform_container = NULL;
 static lv_obj_t *waveform_canvas = NULL;
 static lv_obj_t *playhead_line = NULL;
@@ -30,14 +35,75 @@ static uint32_t view_height = 0;
 static uint32_t waveform_height = 0;
 static bool visible = false;
 
+// Resolution control (1=480 bars, 2=240 bars, 4=120 bars, 8=60 bars)
+static int resolution_divider = WAVEFORM_DEFAULT_RESOLUTION;
+
 // Ring buffer scroll optimization
 static size_t last_wave_index = 0;
 static bool first_frame = true;
 #define SCROLL_DELTA_THRESHOLD 20  // Full redraw if scroll > 20 pixels
 
+// Stable display cache - prevents past data from changing
+static uint8_t display_cache[WAVEFORM_BARS];
+static size_t display_cache_center_index = 0;
+static bool display_cache_valid = false;
+
 // Grid lines
 static float *beat_positions = NULL;
 static size_t num_beats = 0;
+
+/**
+ * @brief Update display cache with new waveform data
+ * 
+ * Only updates RIGHT side (future) of cache. LEFT side (past) stays stable.
+ * This prevents the waveform from visually changing behind the playhead.
+ */
+static void update_display_cache(const uint8_t *source, size_t source_len, size_t new_center_index) {
+    if (!source || source_len == 0) return;
+    
+    int delta = (int)new_center_index - (int)display_cache_center_index;
+    
+    if (!display_cache_valid || delta < 0 || delta > WAVEFORM_BARS / 2) {
+        // Full cache refresh: seek, scrub backwards, or first frame
+        size_t copy_len = (source_len < WAVEFORM_BARS) ? source_len : WAVEFORM_BARS;
+        memcpy(display_cache, source, copy_len);
+        if (copy_len < WAVEFORM_BARS) {
+            memset(display_cache + copy_len, 0, WAVEFORM_BARS - copy_len);
+        }
+        display_cache_valid = true;
+    } else if (delta > 0) {
+        // Incremental update: shift left, copy new data on right
+        memmove(display_cache, display_cache + delta, WAVEFORM_BARS - delta);
+        
+        // Copy new right-side data from source (right half = future audio)
+        int src_start = WAVEFORM_BARS / 2;  // Start from center (playhead position in source)
+        int cache_start = WAVEFORM_BARS - delta;
+        for (int i = 0; i < delta && cache_start + i < WAVEFORM_BARS; i++) {
+            int src_idx = src_start + (WAVEFORM_BARS / 2 - delta) + i;
+            if (src_idx >= 0 && src_idx < (int)source_len) {
+                display_cache[cache_start + i] = source[src_idx];
+            } else {
+                display_cache[cache_start + i] = 0;
+            }
+        }
+    }
+    // delta == 0: no change needed
+    
+    display_cache_center_index = new_center_index;
+}
+
+/**
+ * @brief Get binned peak value (MAX of samples in bin for transient visibility)
+ */
+static inline uint8_t get_binned_peak(const uint8_t *data, int start_idx, int bin_size, int max_idx) {
+    uint8_t max_peak = 0;
+    for (int i = 0; i < bin_size && (start_idx + i) < max_idx; i++) {
+        if (data[start_idx + i] > max_peak) {
+            max_peak = data[start_idx + i];
+        }
+    }
+    return max_peak;
+}
 
 /**
  * @brief Draw a single vertical bar at position x
@@ -69,10 +135,11 @@ static inline void draw_bar_at(lv_color_t *buffer, int x, uint8_t peak,
 }
 
 /**
- * @brief Draw waveform with ring buffer scroll optimization
+ * @brief Draw waveform with ring buffer scroll optimization and variable resolution
  * 
  * Uses incremental scrolling: shifts existing pixels left and only draws
  * new columns. Falls back to full redraw on seek/scrub (backwards or large jump).
+ * Resolution divider reduces bars drawn for better performance.
  */
 static void draw_waveform(const uint8_t *waveform_data, size_t num_samples, size_t wave_index) {
     if (!waveform_canvas || !visible) return;
@@ -81,11 +148,18 @@ static void draw_waveform(const uint8_t *waveform_data, size_t num_samples, size
     lv_color_t *buffer = (lv_color_t *)canvas_img->data;
     if (!buffer) return;
     
+    // Update display cache first (stabilizes past data)
+    update_display_cache(waveform_data, num_samples, wave_index);
+    
     lv_color_t fg_color = hud_theme_get_foreground_color();
     lv_color_t bg_color = lv_color_black();
     int center_y = view_height / 2;
     
-    // Calculate scroll delta since last frame
+    // Calculate effective bars based on resolution
+    int effective_bars = WAVEFORM_BARS / resolution_divider;
+    int bar_width = resolution_divider;  // Each bar spans this many pixels
+    
+    // Calculate scroll delta since last frame (in display cache units)
     int scroll_delta = 0;
     bool need_full_redraw = first_frame;
     
@@ -101,45 +175,85 @@ static void draw_waveform(const uint8_t *waveform_data, size_t num_samples, size
     first_frame = false;
     last_wave_index = wave_index;
     
+    // Scale scroll delta for resolution
+    int pixel_scroll = scroll_delta * bar_width / resolution_divider;
+    if (pixel_scroll < 0) pixel_scroll = 0;
+    
     if (need_full_redraw) {
-        // Full redraw: clear and draw all columns
+        // Full redraw: clear and draw all bars
         size_t buffer_size_bytes = view_width * view_height * sizeof(lv_color_t);
         memset(buffer, 0, buffer_size_bytes);
         
-        if (waveform_data && num_samples > 0) {
-            for (int x = 0; x < (int)view_width && x < (int)num_samples; x++) {
-                uint8_t peak = waveform_data[x];
-                if (peak > 0) {
-                    int bar_height = (peak * waveform_height) / 255;
-                    if (bar_height < 1) bar_height = 1;
-                    if (bar_height > (int)waveform_height) bar_height = waveform_height;
-                    
-                    int y_start = center_y - (bar_height / 2);
-                    int y_end = center_y + (bar_height / 2);
-                    if (y_start < 0) y_start = 0;
-                    if (y_end >= (int)view_height) y_end = view_height - 1;
-                    
+        for (int bar = 0; bar < effective_bars; bar++) {
+            // Get binned peak (MAX within bin for transient visibility)
+            int data_start = bar * resolution_divider;
+            uint8_t peak = get_binned_peak(display_cache, data_start, resolution_divider, WAVEFORM_BARS);
+            
+            if (peak > 0) {
+                int bar_height = (peak * waveform_height) / 255;
+                if (bar_height < 1) bar_height = 1;
+                if (bar_height > (int)waveform_height) bar_height = waveform_height;
+                
+                int y_start = center_y - (bar_height / 2);
+                int y_end = center_y + (bar_height / 2);
+                if (y_start < 0) y_start = 0;
+                if (y_end >= (int)view_height) y_end = view_height - 1;
+                
+                // Draw bar (width = bar_width pixels)
+                int x_start = bar * bar_width;
+                int x_end = x_start + bar_width;
+                if (x_end > (int)view_width) x_end = view_width;
+                
+                for (int x = x_start; x < x_end; x++) {
                     for (int y = y_start; y <= y_end; y++) {
                         buffer[y * view_width + x] = fg_color;
                     }
                 }
             }
         }
-    } else if (scroll_delta > 0) {
-        // Incremental scroll: shift rows left, draw only new columns on right
+    } else if (scroll_delta > 0 && pixel_scroll > 0) {
+        // Incremental scroll: shift rows left by pixel_scroll pixels
+        int shift_amount = pixel_scroll;
+        if (shift_amount > (int)view_width) shift_amount = view_width;
+        
         for (int y = 0; y < (int)view_height; y++) {
             lv_color_t *row = &buffer[y * view_width];
-            memmove(row, row + scroll_delta, (view_width - scroll_delta) * sizeof(lv_color_t));
+            memmove(row, row + shift_amount, (view_width - shift_amount) * sizeof(lv_color_t));
         }
         
-        // Draw new columns on the right edge
-        if (waveform_data && num_samples > 0) {
-            int start_x = (int)view_width - scroll_delta;
-            if (start_x < 0) start_x = 0;
+        // Draw new bars on the right edge
+        int start_bar = effective_bars - (scroll_delta / resolution_divider) - 1;
+        if (start_bar < 0) start_bar = 0;
+        
+        for (int bar = start_bar; bar < effective_bars; bar++) {
+            int data_start = bar * resolution_divider;
+            uint8_t peak = get_binned_peak(display_cache, data_start, resolution_divider, WAVEFORM_BARS);
             
-            for (int x = start_x; x < (int)view_width; x++) {
-                if (x < (int)num_samples) {
-                    draw_bar_at(buffer, x, waveform_data[x], center_y, fg_color, bg_color);
+            int x_start = bar * bar_width;
+            int x_end = x_start + bar_width;
+            if (x_end > (int)view_width) x_end = view_width;
+            
+            // Clear and draw this bar
+            for (int x = x_start; x < x_end; x++) {
+                for (int y = 0; y < (int)view_height; y++) {
+                    buffer[y * view_width + x] = bg_color;
+                }
+            }
+            
+            if (peak > 0) {
+                int bar_height = (peak * waveform_height) / 255;
+                if (bar_height < 1) bar_height = 1;
+                if (bar_height > (int)waveform_height) bar_height = waveform_height;
+                
+                int y_start = center_y - (bar_height / 2);
+                int y_end = center_y + (bar_height / 2);
+                if (y_start < 0) y_start = 0;
+                if (y_end >= (int)view_height) y_end = view_height - 1;
+                
+                for (int x = x_start; x < x_end; x++) {
+                    for (int y = y_start; y <= y_end; y++) {
+                        buffer[y * view_width + x] = fg_color;
+                    }
                 }
             }
         }
@@ -287,4 +401,23 @@ void waveform_view_reset(void) {
     // Reset scroll state for new track
     first_frame = true;
     last_wave_index = 0;
+    display_cache_valid = false;
+    display_cache_center_index = 0;
+    memset(display_cache, 0, sizeof(display_cache));
+}
+
+void waveform_view_set_resolution(int divider) {
+    if (divider < 1) divider = 1;
+    if (divider > 8) divider = 8;
+    
+    if (divider != resolution_divider) {
+        resolution_divider = divider;
+        first_frame = true;  // Force full redraw with new resolution
+        ESP_LOGI(TAG, "Waveform resolution set to 1/%d (%d bars)", 
+                 divider, WAVEFORM_BARS / divider);
+    }
+}
+
+int waveform_view_get_resolution(void) {
+    return resolution_divider;
 }

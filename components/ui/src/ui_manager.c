@@ -244,3 +244,11 @@ void ui_manager_refresh_crate(void) {
     crate_view_refresh_tracks();
 }
 
+void ui_manager_set_waveform_resolution(int divider) {
+    waveform_view_set_resolution(divider);
+}
+
+int ui_manager_get_waveform_resolution(void) {
+    return waveform_view_get_resolution();
+}
+
