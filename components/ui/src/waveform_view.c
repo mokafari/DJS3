@@ -8,6 +8,7 @@
 #include "lvgl_driver.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "lvgl.h"
@@ -19,9 +20,69 @@ static const char *TAG = "waveform_view";
 #define WAVEFORM_BARS 480
 #define GRID_DOT_SPACING 4
 
+// ============================================================================
+// PERFORMANCE PROFILING
+// ============================================================================
+#define PERF_ENABLED 1              // Set to 0 to disable profiling
+#define PERF_LOG_INTERVAL 100       // Log stats every N frames
+#define PERF_ROLLING_WINDOW 30      // Rolling average window size
+
+#if PERF_ENABLED
+static uint64_t perf_frame_times[PERF_ROLLING_WINDOW];
+static uint64_t perf_cache_times[PERF_ROLLING_WINDOW];
+static uint64_t perf_draw_times[PERF_ROLLING_WINDOW];
+static uint64_t perf_invalidate_times[PERF_ROLLING_WINDOW];
+static int perf_index = 0;
+static int perf_frame_count = 0;
+static int perf_full_redraws = 0;
+static int perf_incremental_draws = 0;
+static int perf_skip_draws = 0;
+
+static inline uint64_t perf_get_time_us(void) {
+    return esp_timer_get_time();
+}
+
+static void perf_log_stats(void) {
+    if (perf_frame_count == 0) return;
+    
+    // Calculate averages
+    uint64_t total_frame = 0, total_cache = 0, total_draw = 0, total_invalidate = 0;
+    int samples = (perf_frame_count < PERF_ROLLING_WINDOW) ? perf_frame_count : PERF_ROLLING_WINDOW;
+    
+    for (int i = 0; i < samples; i++) {
+        total_frame += perf_frame_times[i];
+        total_cache += perf_cache_times[i];
+        total_draw += perf_draw_times[i];
+        total_invalidate += perf_invalidate_times[i];
+    }
+    
+    uint64_t avg_frame = total_frame / samples;
+    uint64_t avg_cache = total_cache / samples;
+    uint64_t avg_draw = total_draw / samples;
+    uint64_t avg_invalidate = total_invalidate / samples;
+    
+    float fps = (avg_frame > 0) ? 1000000.0f / avg_frame : 0;
+    
+    ESP_LOGI(TAG, "PERF: %.1f FPS | frame=%lluus cache=%lluus draw=%lluus inv=%lluus | full=%d inc=%d skip=%d",
+             fps, 
+             (unsigned long long)avg_frame,
+             (unsigned long long)avg_cache, 
+             (unsigned long long)avg_draw,
+             (unsigned long long)avg_invalidate,
+             perf_full_redraws, perf_incremental_draws, perf_skip_draws);
+    
+    // Reset counters
+    perf_full_redraws = 0;
+    perf_incremental_draws = 0;
+    perf_skip_draws = 0;
+}
+#endif
+
 // Compile-time default resolution (can be overridden at runtime)
+// Trade-off: Lower values = more detail, Higher = better performance
+// Recommended: 2-4 for 240MHz ESP32-S3 with PSRAM canvas
 #ifndef WAVEFORM_DEFAULT_RESOLUTION
-#define WAVEFORM_DEFAULT_RESOLUTION 1  // 1=full, 2=half, 4=quarter, 8=eighth
+#define WAVEFORM_DEFAULT_RESOLUTION 4  // 1=full, 2=half, 4=quarter (DEFAULT), 8=eighth
 #endif
 
 static lv_obj_t *waveform_container = NULL;
@@ -41,7 +102,12 @@ static int resolution_divider = WAVEFORM_DEFAULT_RESOLUTION;
 // Ring buffer scroll optimization
 static size_t last_wave_index = 0;
 static bool first_frame = true;
-#define SCROLL_DELTA_THRESHOLD 20  // Full redraw if scroll > 20 pixels
+#define SCROLL_DELTA_THRESHOLD 30  // Full redraw if scroll > 30 pixels
+
+// Frame throttling - minimum pixels to scroll before update
+#define MIN_SCROLL_FOR_UPDATE 2    // Don't redraw for tiny movements
+static uint64_t last_draw_time_us = 0;
+#define MIN_FRAME_INTERVAL_US 25000  // Max ~40 FPS for waveform (save CPU)
 
 // Stable display cache - prevents past data from changing
 static uint8_t display_cache[WAVEFORM_BARS];
@@ -144,12 +210,38 @@ static inline void draw_bar_at(lv_color_t *buffer, int x, uint8_t peak,
 static void draw_waveform(const uint8_t *waveform_data, size_t num_samples, size_t wave_index) {
     if (!waveform_canvas || !visible) return;
     
+    // Frame throttling: check if we should skip this frame
+    uint64_t current_time = esp_timer_get_time();
+    int preliminary_delta = (int)wave_index - (int)last_wave_index;
+    
+    // Skip frame if: not first frame, small movement, and not enough time passed
+    if (!first_frame && preliminary_delta >= 0 && preliminary_delta < MIN_SCROLL_FOR_UPDATE) {
+        if ((current_time - last_draw_time_us) < MIN_FRAME_INTERVAL_US) {
+#if PERF_ENABLED
+            perf_skip_draws++;
+#endif
+            return;  // Skip this frame
+        }
+    }
+    
+#if PERF_ENABLED
+    uint64_t t_start = perf_get_time_us();
+    uint64_t t_cache_start, t_cache_end;
+    uint64_t t_draw_start, t_draw_end;
+#endif
+    
     lv_img_dsc_t *canvas_img = lv_canvas_get_img(waveform_canvas);
     lv_color_t *buffer = (lv_color_t *)canvas_img->data;
     if (!buffer) return;
     
+#if PERF_ENABLED
+    t_cache_start = perf_get_time_us();
+#endif
     // Update display cache first (stabilizes past data)
     update_display_cache(waveform_data, num_samples, wave_index);
+#if PERF_ENABLED
+    t_cache_end = perf_get_time_us();
+#endif
     
     lv_color_t fg_color = hud_theme_get_foreground_color();
     lv_color_t bg_color = lv_color_black();
@@ -179,13 +271,20 @@ static void draw_waveform(const uint8_t *waveform_data, size_t num_samples, size
     int pixel_scroll = scroll_delta * bar_width / resolution_divider;
     if (pixel_scroll < 0) pixel_scroll = 0;
     
+#if PERF_ENABLED
+    t_draw_start = perf_get_time_us();
+#endif
+    
     if (need_full_redraw) {
-        // Full redraw: clear and draw all bars
+#if PERF_ENABLED
+        perf_full_redraws++;
+#endif
+        // Full redraw: clear buffer with memset (fastest)
         size_t buffer_size_bytes = view_width * view_height * sizeof(lv_color_t);
         memset(buffer, 0, buffer_size_bytes);
         
+        // Draw bar by bar but access memory in row-friendly pattern
         for (int bar = 0; bar < effective_bars; bar++) {
-            // Get binned peak (MAX within bin for transient visibility)
             int data_start = bar * resolution_divider;
             uint8_t peak = get_binned_peak(display_cache, data_start, resolution_divider, WAVEFORM_BARS);
             
@@ -199,46 +298,59 @@ static void draw_waveform(const uint8_t *waveform_data, size_t num_samples, size
                 if (y_start < 0) y_start = 0;
                 if (y_end >= (int)view_height) y_end = view_height - 1;
                 
-                // Draw bar (width = bar_width pixels)
                 int x_start = bar * bar_width;
                 int x_end = x_start + bar_width;
                 if (x_end > (int)view_width) x_end = view_width;
                 
-                for (int x = x_start; x < x_end; x++) {
-                    for (int y = y_start; y <= y_end; y++) {
-                        buffer[y * view_width + x] = fg_color;
+                // Draw bar row by row for better cache behavior
+                for (int y = y_start; y <= y_end; y++) {
+                    lv_color_t *row = &buffer[y * view_width];
+                    for (int x = x_start; x < x_end; x++) {
+                        row[x] = fg_color;
                     }
                 }
             }
         }
     } else if (scroll_delta > 0 && pixel_scroll > 0) {
-        // Incremental scroll: shift rows left by pixel_scroll pixels
+#if PERF_ENABLED
+        perf_incremental_draws++;
+#endif
+        // Incremental scroll: shift buffer left and draw new bars on right
         int shift_amount = pixel_scroll;
         if (shift_amount > (int)view_width) shift_amount = view_width;
         
+        // Optimized row shift: process in cache-friendly chunks
+        // Each row is view_width * sizeof(lv_color_t) bytes
+        size_t row_bytes = view_width * sizeof(lv_color_t);
+        size_t shift_bytes = shift_amount * sizeof(lv_color_t);
+        size_t copy_bytes = row_bytes - shift_bytes;
+        
         for (int y = 0; y < (int)view_height; y++) {
-            lv_color_t *row = &buffer[y * view_width];
-            memmove(row, row + shift_amount, (view_width - shift_amount) * sizeof(lv_color_t));
+            uint8_t *row = (uint8_t *)&buffer[y * view_width];
+            memmove(row, row + shift_bytes, copy_bytes);
         }
         
-        // Draw new bars on the right edge
-        int start_bar = effective_bars - (scroll_delta / resolution_divider) - 1;
+        // Calculate which bars need drawing (rightmost bars after shift)
+        int bars_to_draw = (scroll_delta + resolution_divider - 1) / resolution_divider + 1;
+        int start_bar = effective_bars - bars_to_draw;
         if (start_bar < 0) start_bar = 0;
         
+        // Pre-calculate x range for all new bars
+        int clear_x_start = start_bar * bar_width;
+        int clear_x_end = (int)view_width;
+        
+        // Bulk clear the new area (row by row for cache efficiency)
+        for (int y = 0; y < (int)view_height; y++) {
+            lv_color_t *row = &buffer[y * view_width + clear_x_start];
+            for (int x = 0; x < clear_x_end - clear_x_start; x++) {
+                row[x] = bg_color;
+            }
+        }
+        
+        // Draw new bars
         for (int bar = start_bar; bar < effective_bars; bar++) {
             int data_start = bar * resolution_divider;
             uint8_t peak = get_binned_peak(display_cache, data_start, resolution_divider, WAVEFORM_BARS);
-            
-            int x_start = bar * bar_width;
-            int x_end = x_start + bar_width;
-            if (x_end > (int)view_width) x_end = view_width;
-            
-            // Clear and draw this bar
-            for (int x = x_start; x < x_end; x++) {
-                for (int y = 0; y < (int)view_height; y++) {
-                    buffer[y * view_width + x] = bg_color;
-                }
-            }
             
             if (peak > 0) {
                 int bar_height = (peak * waveform_height) / 255;
@@ -250,17 +362,54 @@ static void draw_waveform(const uint8_t *waveform_data, size_t num_samples, size
                 if (y_start < 0) y_start = 0;
                 if (y_end >= (int)view_height) y_end = view_height - 1;
                 
-                for (int x = x_start; x < x_end; x++) {
-                    for (int y = y_start; y <= y_end; y++) {
-                        buffer[y * view_width + x] = fg_color;
+                int x_start = bar * bar_width;
+                int x_end = x_start + bar_width;
+                if (x_end > (int)view_width) x_end = view_width;
+                
+                // Draw bar row by row (cache-friendly)
+                for (int y = y_start; y <= y_end; y++) {
+                    lv_color_t *row = &buffer[y * view_width];
+                    for (int x = x_start; x < x_end; x++) {
+                        row[x] = fg_color;
                     }
                 }
             }
         }
+    } else {
+#if PERF_ENABLED
+        perf_skip_draws++;
+#endif
     }
     // If scroll_delta == 0, no update needed (paused or same frame)
     
+#if PERF_ENABLED
+    t_draw_end = perf_get_time_us();
+    uint64_t t_invalidate_start = perf_get_time_us();
+#endif
+    
     lv_obj_invalidate(waveform_canvas);
+    
+    // Update last draw time for throttling
+    last_draw_time_us = esp_timer_get_time();
+    
+#if PERF_ENABLED
+    uint64_t t_invalidate_end = perf_get_time_us();
+    uint64_t t_end = perf_get_time_us();
+    
+    // Record timing samples
+    perf_frame_times[perf_index] = t_end - t_start;
+    perf_cache_times[perf_index] = t_cache_end - t_cache_start;
+    perf_draw_times[perf_index] = t_draw_end - t_draw_start;
+    perf_invalidate_times[perf_index] = t_invalidate_end - t_invalidate_start;
+    
+    perf_index = (perf_index + 1) % PERF_ROLLING_WINDOW;
+    perf_frame_count++;
+    
+    // Periodic stats logging
+    if (perf_frame_count % PERF_LOG_INTERVAL == 0) {
+        perf_log_stats();
+    }
+#endif
 }
 
 static lv_obj_t *progress_bar_bg = NULL;
@@ -276,33 +425,41 @@ void waveform_view_init(uint32_t width, uint32_t height) {
     int bottom_bar_height = 40;
     int available_height = height - top_bar_height - bottom_bar_height;
     
-    // Use 60% of available height for the actual waveform, centered
-    view_height = available_height; 
-    waveform_height = view_height * 60 / 100;
+    // PERFORMANCE OPTIMIZATION: Use smaller canvas (100 pixels = ~96KB buffer)
+    // This is the main waveform display area, kept compact for faster rendering
+    // The container is full height but canvas is centered within it
+    int container_height = available_height;  // Container spans full available area
+    view_height = 100;  // Reduced from 202 for ~2x performance improvement
+    waveform_height = 80;  // 80% of view used for waveform bars
     
-    // Create container
+    int canvas_y_offset = (container_height - view_height) / 2;  // Center canvas vertically
+    
+    // Create container (full available height, black background)
     waveform_container = lv_obj_create(lv_scr_act());
-    lv_obj_set_size(waveform_container, view_width, view_height);
+    lv_obj_set_size(waveform_container, view_width, container_height);
     lv_obj_set_pos(waveform_container, 0, top_bar_height); 
     lv_obj_set_style_bg_color(waveform_container, lv_color_black(), 0);
     lv_obj_set_style_border_width(waveform_container, 0, 0);
     lv_obj_set_style_pad_all(waveform_container, 0, 0);
     lv_obj_clear_flag(waveform_container, LV_OBJ_FLAG_SCROLLABLE);
     
-    // Create canvas for waveform
+    // Create canvas for waveform (reduced height for performance)
     waveform_canvas = lv_canvas_create(waveform_container);
     
     size_t canvas_buf_size = view_width * view_height * sizeof(lv_color_t);
-    ESP_LOGI(TAG, "Allocating canvas buffer: %zu bytes", canvas_buf_size);
+    ESP_LOGI(TAG, "Allocating canvas buffer: %zu bytes (height=%d, optimized)", 
+             canvas_buf_size, (int)view_height);
     
     void *canvas_buf = NULL;
     
-    // Try INTERNAL RAM first
+    // Try INTERNAL RAM first (96KB might fit!)
     canvas_buf = heap_caps_malloc(canvas_buf_size, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     
     if (!canvas_buf) {
         ESP_LOGW(TAG, "Internal RAM allocation failed, trying PSRAM...");
         canvas_buf = heap_caps_malloc(canvas_buf_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    } else {
+        ESP_LOGI(TAG, "Canvas buffer allocated in INTERNAL RAM!");
     }
     
     // Yield to prevent watchdog timeout
@@ -316,20 +473,20 @@ void waveform_view_init(uint32_t width, uint32_t height) {
         ESP_LOGI(TAG, "Canvas buffer allocated at %p", canvas_buf);
         lv_canvas_set_buffer(waveform_canvas, canvas_buf, view_width, view_height, LV_IMG_CF_TRUE_COLOR);
         lv_obj_set_size(waveform_canvas, view_width, view_height);
-        lv_obj_set_pos(waveform_canvas, 0, 0);
+        lv_obj_set_pos(waveform_canvas, 0, canvas_y_offset);  // Center vertically
         lv_canvas_fill_bg(waveform_canvas, lv_color_black(), LV_OPA_COVER);
     }
     
-    // Create fixed playhead line (center)
+    // Create fixed playhead line (center, spans full container height)
     playhead_line = lv_obj_create(waveform_container);
-    lv_obj_set_size(playhead_line, 2, view_height);
+    lv_obj_set_size(playhead_line, 2, container_height);
     lv_obj_set_pos(playhead_line, view_width / 2 - 1, 0);
     lv_obj_set_style_bg_color(playhead_line, hud_theme_get_foreground_color(), 0);
     lv_obj_set_style_bg_opa(playhead_line, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(playhead_line, 0, 0);
     lv_obj_clear_flag(playhead_line, LV_OBJ_FLAG_CLICKABLE);
     
-    // Progress Bar (bottom 4px) - amber fill bar showing track position
+    // Progress Bar (bottom 4px of container) - amber fill bar showing track position
     progress_bar_bg = lv_obj_create(waveform_container);
     lv_obj_set_size(progress_bar_bg, view_width, 4);
     lv_obj_set_align(progress_bar_bg, LV_ALIGN_BOTTOM_MID);
@@ -401,6 +558,7 @@ void waveform_view_reset(void) {
     // Reset scroll state for new track
     first_frame = true;
     last_wave_index = 0;
+    last_draw_time_us = 0;
     display_cache_valid = false;
     display_cache_center_index = 0;
     memset(display_cache, 0, sizeof(display_cache));
@@ -420,4 +578,70 @@ void waveform_view_set_resolution(int divider) {
 
 int waveform_view_get_resolution(void) {
     return resolution_divider;
+}
+
+// ============================================================================
+// PERFORMANCE API
+// ============================================================================
+
+float waveform_view_get_fps(void) {
+#if PERF_ENABLED
+    if (perf_frame_count == 0) return 0.0f;
+    
+    int samples = (perf_frame_count < PERF_ROLLING_WINDOW) ? perf_frame_count : PERF_ROLLING_WINDOW;
+    uint64_t total = 0;
+    for (int i = 0; i < samples; i++) {
+        total += perf_frame_times[i];
+    }
+    uint64_t avg = total / samples;
+    return (avg > 0) ? 1000000.0f / avg : 0.0f;
+#else
+    return -1.0f;  // Profiling disabled
+#endif
+}
+
+void waveform_view_get_perf_stats(uint32_t *frame_us, uint32_t *cache_us, 
+                                   uint32_t *draw_us, uint32_t *invalidate_us) {
+#if PERF_ENABLED
+    if (perf_frame_count == 0) {
+        if (frame_us) *frame_us = 0;
+        if (cache_us) *cache_us = 0;
+        if (draw_us) *draw_us = 0;
+        if (invalidate_us) *invalidate_us = 0;
+        return;
+    }
+    
+    int samples = (perf_frame_count < PERF_ROLLING_WINDOW) ? perf_frame_count : PERF_ROLLING_WINDOW;
+    uint64_t tf = 0, tc = 0, td = 0, ti = 0;
+    for (int i = 0; i < samples; i++) {
+        tf += perf_frame_times[i];
+        tc += perf_cache_times[i];
+        td += perf_draw_times[i];
+        ti += perf_invalidate_times[i];
+    }
+    
+    if (frame_us) *frame_us = (uint32_t)(tf / samples);
+    if (cache_us) *cache_us = (uint32_t)(tc / samples);
+    if (draw_us) *draw_us = (uint32_t)(td / samples);
+    if (invalidate_us) *invalidate_us = (uint32_t)(ti / samples);
+#else
+    if (frame_us) *frame_us = 0;
+    if (cache_us) *cache_us = 0;
+    if (draw_us) *draw_us = 0;
+    if (invalidate_us) *invalidate_us = 0;
+#endif
+}
+
+void waveform_view_reset_perf(void) {
+#if PERF_ENABLED
+    perf_index = 0;
+    perf_frame_count = 0;
+    perf_full_redraws = 0;
+    perf_incremental_draws = 0;
+    perf_skip_draws = 0;
+    memset(perf_frame_times, 0, sizeof(perf_frame_times));
+    memset(perf_cache_times, 0, sizeof(perf_cache_times));
+    memset(perf_draw_times, 0, sizeof(perf_draw_times));
+    memset(perf_invalidate_times, 0, sizeof(perf_invalidate_times));
+#endif
 }

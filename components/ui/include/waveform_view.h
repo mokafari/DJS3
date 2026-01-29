@@ -38,6 +38,33 @@ void waveform_view_set_resolution(int divider);
  */
 int waveform_view_get_resolution(void);
 
+// ============================================================================
+// PERFORMANCE PROFILING API
+// ============================================================================
+
+/**
+ * @brief Get current waveform rendering FPS
+ * 
+ * @return Rolling average FPS, or -1 if profiling disabled
+ */
+float waveform_view_get_fps(void);
+
+/**
+ * @brief Get detailed performance statistics (rolling averages)
+ * 
+ * @param frame_us Average total frame time in microseconds
+ * @param cache_us Average cache update time in microseconds
+ * @param draw_us Average draw time in microseconds
+ * @param invalidate_us Average invalidate time in microseconds
+ */
+void waveform_view_get_perf_stats(uint32_t *frame_us, uint32_t *cache_us, 
+                                   uint32_t *draw_us, uint32_t *invalidate_us);
+
+/**
+ * @brief Reset performance counters
+ */
+void waveform_view_reset_perf(void);
+
 #ifdef __cplusplus
 }
 #endif
