@@ -4,6 +4,7 @@
  */
 
 #include "lvgl_driver.h"
+#include "gt911.h"
 #include "display.h"
 #include "board_config.h"
 #include "esp_log.h"
@@ -53,13 +54,6 @@ static void disp_flush(lv_disp_drv_t *disp_drv, const lv_area_t *area, lv_color_
     uint32_t h = (area->y2 - area->y1 + 1);
     uint32_t pixel_count = w * h;
     
-    // Debug: Log first few flushes to verify callback is being called
-    static int flush_count = 0;
-    if (flush_count < 5) {
-        ESP_LOGI(TAG, "Flush #%d: (%d,%d) to (%d,%d), %d pixels", flush_count, area->x1, area->y1, area->x2, area->y2, pixel_count);
-        flush_count++;
-    }
-    
     // Set display window for the entire area
     display_set_window(area->x1, area->y1, area->x2, area->y2);
     
@@ -94,27 +88,11 @@ static void disp_flush(lv_disp_drv_t *disp_drv, const lv_area_t *area, lv_color_
     // Convert LVGL colors to RGB565
     // If LV_COLOR_DEPTH == 16, lv_color_t is already RGB565 format in the 'full' field
     // Note: display_send_data_batch() handles byte-swapping via MSB_32_16_16_SET macro
-    static int color_log_count = 0;
-    static bool color_logging_enabled = true;
-    const int COLOR_LOG_MAX = 10;  // Log first 10 pixels
-    
     for (uint32_t i = 0; i < pixel_count; i++) {
         lv_color_t color = color_p[i];
 #if LV_COLOR_DEPTH == 16
         // LVGL provides RGB565 format - use it directly
-        // display_send_data_batch() will handle byte-swapping for MSB-first display
         rgb565_ptr[i] = color.full;
-        
-        // Debug: Log first few pixel colors with RGB components
-        if (color_logging_enabled && color_log_count < COLOR_LOG_MAX) {
-            uint16_t rgb565 = color.full;
-            uint8_t r = (rgb565 >> 11) & 0x1F;
-            uint8_t g = (rgb565 >> 5) & 0x3F;
-            uint8_t b = rgb565 & 0x1F;
-            ESP_LOGI(TAG, "LVGL[%d] Pixel %u: full=0x%04X, R=%d(%d), G=%d(%d), B=%d(%d)",
-                     color_log_count, i, rgb565, r, r<<3, g, g<<2, b, b<<3);
-            color_log_count++;
-        }
 #else
         // Manual conversion for other color depths
         rgb565_ptr[i] = ((color.ch.red << 8) & 0xF800) | 
@@ -138,6 +116,16 @@ static void disp_flush(lv_disp_drv_t *disp_drv, const lv_area_t *area, lv_color_
  * @brief Touch read callback
  */
 static void touch_read(lv_indev_drv_t *indev_drv, lv_indev_data_t *data) {
+    uint16_t x, y;
+    bool pressed;
+    // Read from GT911 driver
+    if (gt911_read(&x, &y, &pressed) == ESP_OK) {
+        // Update static state
+        touch_data.point.x = x;
+        touch_data.point.y = y;
+        touch_data.state = pressed ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
+    }
+    // Return last known state
     *data = touch_data;
 }
 
@@ -214,29 +202,26 @@ int lvgl_driver_init(uint32_t width, uint32_t height) {
     lv_disp_draw_buf_init(&draw_buf, disp_draw_buf1, disp_draw_buf2, buf_size);
     ESP_LOGI(TAG, "Display draw buffer initialized");
     
+    // Initialize touch driver
+    if (gt911_init() != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to initialize GT911 touch driver");
+    } else {
+        ESP_LOGI(TAG, "GT911 touch driver initialized");
+    }
+    
     // Initialize display driver
     lv_disp_drv_init(&disp_drv);
     disp_drv.hor_res = width;
     disp_drv.ver_res = height;
     disp_drv.flush_cb = disp_flush;
     disp_drv.draw_buf = &draw_buf;
-    lv_disp_t *disp = lv_disp_drv_register(&disp_drv);
+    lv_disp_drv_register(&disp_drv);
     
     // Set screen background color (important - otherwise screen appears blank)
     lv_obj_t *scr = lv_scr_act();
     lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
     lv_obj_invalidate(scr); // Force initial redraw
-    
-    // TEST: Create a bright colored rectangle to verify display works
-    lv_obj_t *test_rect = lv_obj_create(scr);
-    lv_obj_set_size(test_rect, 100, 50);
-    lv_obj_set_pos(test_rect, 10, 10);
-    lv_obj_set_style_bg_color(test_rect, lv_color_hex(0xFFB000), 0); // Amber color
-    lv_obj_set_style_bg_opa(test_rect, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(test_rect, 0, 0);
-    lv_obj_invalidate(test_rect);
-    ESP_LOGI(TAG, "Test rectangle created (amber, 100x50 at 10,10)");
     
     ESP_LOGI(TAG, "Screen background set and invalidated");
     
@@ -305,4 +290,3 @@ void lvgl_driver_handle_touch(uint16_t x, uint16_t y, bool pressed) {
     touch_data.point.y = y;
     touch_data.state = pressed ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
 }
-

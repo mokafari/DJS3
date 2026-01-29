@@ -124,6 +124,13 @@ void ui_manager_handle_touch(uint16_t x, uint16_t y, bool pressed);
  */
 void ui_manager_trigger_nudge_animation(void);
 
+/**
+ * @brief Handle crate selection event (track chosen)
+ * 
+ * @param index Index of selected track in database
+ */
+void ui_manager_handle_crate_select(int index);
+
 #ifdef __cplusplus
 }
 #endif

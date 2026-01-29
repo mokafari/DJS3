@@ -14,6 +14,7 @@
 #include <stdlib.h>
 
 #include "mp3dec.h"
+#include "id3_parser.h"
 
 static const char *TAG = "audio_player";
 
@@ -24,6 +25,7 @@ static const char *TAG = "audio_player";
 static audio_player_state_t player_state = AUDIO_PLAYER_STATE_STOPPED;
 static audio_player_mode_t player_mode = AUDIO_PLAYER_MODE_SIMPLE;
 static char current_filepath[512] = {0};
+static char current_track_title[128] = {0};
 static uint32_t current_position = 0;
 static uint32_t current_duration = 0;
 
@@ -35,6 +37,10 @@ static int16_t *output_buffer = NULL;
 static int bytes_left = 0;
 static uint8_t *read_ptr = NULL;
 static uint32_t file_size = 0;
+
+// Waveform data for UI
+static uint8_t waveform_peaks[480] = {0};
+static int waveform_peak_idx = 0;
 
 // Granular mode
 static granular_engine_t granular_engine;
@@ -125,6 +131,28 @@ bool audio_player_load(const char *filepath) {
     fill_read_buffer();
     
     strncpy(current_filepath, filepath, sizeof(current_filepath) - 1);
+    current_filepath[sizeof(current_filepath) - 1] = '\0';
+    
+    // Parse ID3 tag for title
+    id3_tag_t tag;
+    if (id3_parse_file(filepath, &tag) && tag.title[0] != '\0') {
+        strncpy(current_track_title, tag.title, sizeof(current_track_title) - 1);
+    } else {
+        // Fallback to filename (e.g. /sdcard/song.mp3 -> song)
+        const char *filename = strrchr(filepath, '/');
+        if (filename) filename++; // Skip the slash
+        else filename = filepath;
+        
+        strncpy(current_track_title, filename, sizeof(current_track_title) - 1);
+        
+        // Remove .mp3 extension case-insensitively
+        char *ext = strrchr(current_track_title, '.');
+        if (ext && (strcasecmp(ext, ".mp3") == 0)) {
+            *ext = '\0';
+        }
+    }
+    current_track_title[sizeof(current_track_title) - 1] = '\0';
+    
     player_state = AUDIO_PLAYER_STATE_STOPPED; // Ready but stopped
     current_position = 0;
     
@@ -193,15 +221,27 @@ void audio_player_update(void) {
         MP3GetLastFrameInfo(hMP3Decoder, &frameInfo);
         
         // Write to audio output (stereo samples)
-        // Helix outputs interleaved stereo if 2 channels
         size_t samples = frameInfo.outputSamps;
+        audio_output_write(output_buffer, samples);
         
-        // Check samplerate match (simple handling)
-        if (frameInfo.samprate != audio_output_get_rate()) {
-            // TODO: Reconfigure I2S if needed, for now assume 44.1k
+        // Extract peak for waveform UI
+        int16_t peak = 0;
+        for (size_t i = 0; i < samples; i++) {
+            int16_t val = abs(output_buffer[i]);
+            if (val > peak) peak = val;
         }
         
-        audio_output_write(output_buffer, samples);
+        // Store normalized peak (0-255)
+        // Increase sensitivity (shift 5 instead of 7)
+        waveform_peaks[waveform_peak_idx] = (uint8_t)(peak >> 5);
+        waveform_peak_idx = (waveform_peak_idx + 1) % 480;
+        
+        // Debug logging for peaks (every 100 frames)
+        static int frame_count = 0;
+        if (++frame_count % 100 == 0) {
+            int last_idx = (waveform_peak_idx == 0) ? 479 : waveform_peak_idx - 1;
+            ESP_LOGD(TAG, "Peak: %d (scaled: %d)", peak, waveform_peaks[last_idx]);
+        }
         
         // Update position (approx)
         if (file_size > 0 && mp3_file) {
@@ -220,6 +260,21 @@ void audio_player_update(void) {
     
     if (bytes_left < 1024) {
         fill_read_buffer();
+    }
+}
+
+const char* audio_player_get_track_title(void) {
+    return current_track_title;
+}
+
+void audio_player_get_waveform(uint8_t *buffer, size_t size) {
+    if (!buffer || size == 0) return;
+    
+    // Copy in order (oldest to newest)
+    size_t to_copy = (size < 480) ? size : 480;
+    for (size_t i = 0; i < to_copy; i++) {
+        int idx = (waveform_peak_idx + i) % 480;
+        buffer[i] = waveform_peaks[idx];
     }
 }
 

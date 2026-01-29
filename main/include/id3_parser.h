@@ -9,7 +9,10 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stddef.h>
-#include "track_db.h" // For track_info_t
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 /**
  * @brief ID3 tag information

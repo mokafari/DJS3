@@ -8,6 +8,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -148,6 +149,21 @@ void audio_player_set_granular_pitch(float pitch);
  * @param jitter Jitter amount (0.0 = none, 1.0 = maximum)
  */
 void audio_player_set_granular_jitter(float jitter);
+
+/**
+ * @brief Get the title of the current track (or filename if no tag)
+ * 
+ * @return const char* Track title or empty string
+ */
+const char* audio_player_get_track_title(void);
+
+/**
+ * @brief Get current waveform data for UI
+ * 
+ * @param buffer Output buffer (should be 480 bytes)
+ * @param size Buffer size
+ */
+void audio_player_get_waveform(uint8_t *buffer, size_t size);
 
 #ifdef __cplusplus
 }

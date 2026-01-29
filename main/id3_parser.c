@@ -215,9 +215,8 @@ bool id3_parse_file(const char *filepath, id3_tag_t *tag) {
     
     // Read tag data
     uint32_t tag_size = header.size;
-    if (tag_size > 1024 * 1024) { // Sanity check: max 1MB tag
-        fclose(f);
-        return false;
+    if (tag_size > 16384) { // Sanity check: max 16KB tag for metadata view
+        tag_size = 16384;
     }
     
     uint8_t *tag_data = (uint8_t*)malloc(tag_size);
@@ -236,6 +235,9 @@ bool id3_parse_file(const char *filepath, id3_tag_t *tag) {
     
     // Parse frames
     bool result = parse_id3v2_frames(tag_data, tag_size, tag, header.version_major);
+    if (result) {
+        ESP_LOGI(TAG, "Parsed title: %s", tag->title);
+    }
     
     free(tag_data);
     return result;

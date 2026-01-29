@@ -6,6 +6,7 @@
 #include "metadata_view.h"
 #include "hud_theme.h"
 #include "lvgl_driver.h"
+#include "ui_manager.h"
 #include "esp_log.h"
 #include "lvgl.h"
 #include <stdio.h>
@@ -25,8 +26,16 @@ static lv_obj_t *time_label = NULL;
 static uint32_t view_width = 0;
 static uint32_t view_height = 0;
 static char title_buffer[256] = {0};
-static int title_scroll_pos = 0;
-static int title_scroll_delay = 0;
+
+static void metadata_event_handler(lv_event_t *e) {
+    lv_event_code_t code = lv_event_get_code(e);
+    if (code == LV_EVENT_CLICKED) {
+        // Toggle view logic
+        static bool is_crate = false;
+        is_crate = !is_crate;
+        ui_manager_set_view(is_crate ? UI_VIEW_CRATE : UI_VIEW_WAVEFORM);
+    }
+}
 
 void metadata_view_init(uint32_t width, uint32_t height) {
     ESP_LOGI(TAG, "Metadata view initialized: %ux%u", width, height);
@@ -42,6 +51,8 @@ void metadata_view_init(uint32_t width, uint32_t height) {
     lv_obj_set_style_border_width(metadata_container, 0, 0);
     lv_obj_set_style_pad_all(metadata_container, 0, 0);
     lv_obj_clear_flag(metadata_container, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(metadata_container, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(metadata_container, metadata_event_handler, LV_EVENT_CLICKED, NULL);
     
     lv_style_t *style_phosphor = hud_theme_get_phosphor_style();
     

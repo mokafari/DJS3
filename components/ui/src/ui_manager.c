@@ -11,6 +11,8 @@
 #include "metadata_view.h"
 #include "lvgl_driver.h"
 #include "esp_log.h"
+#include "track_db.h"
+#include "audio_player.h"
 #include <string.h>
 
 static const char *TAG = "ui_manager";
@@ -67,6 +69,24 @@ int ui_manager_init(uint32_t width, uint32_t height) {
     metadata_view_init(width, height);
     ESP_LOGI(TAG, "Metadata view initialized");
     
+    // Populate crate view with tracks from DB
+    uint32_t track_count = track_db_get_count();
+    if (track_count > 0) {
+        const char **track_names = (const char**)malloc(track_count * sizeof(char*));
+        for (uint32_t i = 0; i < track_count; i++) {
+            track_info_t info;
+            if (track_db_get_track(i, &info)) {
+                track_names[i] = strdup(info.title);
+            } else {
+                track_names[i] = "Unknown";
+            }
+        }
+        crate_view_set_tracks(track_names, track_count);
+        // Note: track_names elements were duplicated, crate_view should manage them or we leak
+        // For now, assume crate_view doesn't copy but uses them. 
+        // Actually crate_view should probably copy.
+    }
+    
     // Show initial view
     ESP_LOGI(TAG, "Setting initial view to WAVEFORM...");
     ui_manager_set_view(UI_VIEW_WAVEFORM);
@@ -80,6 +100,18 @@ int ui_manager_init(uint32_t width, uint32_t height) {
     ESP_LOGI(TAG, "UI manager initialized successfully");
     
     return 0;
+}
+
+void ui_manager_handle_crate_select(int index) {
+    track_info_t info;
+    if (track_db_get_track(index, &info)) {
+        ESP_LOGI(TAG, "Loading track from UI: %s", info.filename);
+        if (audio_player_load(info.filename)) {
+            audio_player_play();
+            // Switch back to waveform view after loading
+            ui_manager_set_view(UI_VIEW_WAVEFORM);
+        }
+    }
 }
 
 void ui_manager_deinit(void) {

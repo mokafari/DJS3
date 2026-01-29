@@ -6,6 +6,7 @@
 #include "crate_view.h"
 #include "hud_theme.h"
 #include "lvgl_driver.h"
+#include "ui_manager.h"
 #include "esp_log.h"
 #include "lvgl.h"
 #include <string.h>
@@ -75,6 +76,9 @@ static void list_event_handler(lv_event_t *e) {
                     lv_obj_remove_style(track_items[selected_index], &style_normal, 0);
                     lv_obj_add_style(track_items[selected_index], &style_selected, 0);
                 }
+                
+                // Notify UI manager to load track
+                ui_manager_handle_crate_select(selected_index);
                 break;
             }
         }

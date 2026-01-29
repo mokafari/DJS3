@@ -154,9 +154,9 @@ void waveform_view_init(uint32_t width, uint32_t height) {
     int bottom_bar_height = 40;
     int available_height = height - top_bar_height - bottom_bar_height;
     
-    // Use 80% of available height for the actual waveform, centered
+    // Use 60% of available height for the actual waveform, centered
     view_height = available_height; 
-    waveform_height = view_height * 80 / 100;
+    waveform_height = view_height * 60 / 100;
     
     // Allocate history buffers (try INTERNAL RAM first, like Arduino example)
     for (int i = 0; i < GHOST_FRAMES; i++) {

@@ -104,7 +104,16 @@ size_t audio_output_write(const int16_t *samples, size_t count) {
         // Just write raw for now to save cycles
     }
 
-    i2s_channel_write(tx_handle, samples, bytes_to_write, &bytes_written, portMAX_DELAY);
+    // Use small timeout to prevent blocking the UI loop
+    // If buffer is full, we simply return what was written. 
+    // The decoder loop should handle partial writes or just try again next loop.
+    esp_err_t ret = i2s_channel_write(tx_handle, samples, bytes_to_write, &bytes_written, pdMS_TO_TICKS(10));
+    
+    if (ret != ESP_OK && ret != ESP_ERR_TIMEOUT) {
+        // Log actual errors, but ignore timeout (buffer full)
+        ESP_LOGW(TAG, "I2S write warning: %s", esp_err_to_name(ret));
+    }
+    
     return bytes_written / sizeof(int16_t);
 }
 

@@ -7,6 +7,7 @@ idf_component_register(
         "src/crate_view.c"
         "src/metadata_view.c"
         "src/lvgl_driver.c"
+        "src/gt911.c"
     INCLUDE_DIRS 
         "include"
     PRIV_REQUIRES 

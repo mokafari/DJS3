@@ -376,52 +376,109 @@ void app_main(void)
               // display_test_color_bars();
           }
 
-    // Initialize UI system (only if display is initialized)
-    if (display_ok) {
-        ESP_LOGI(TAG, "Initializing UI system...");
-        ESP_LOGI(TAG, "UI dimensions: %dx%d", DISPLAY_WIDTH, DISPLAY_HEIGHT);
-        ESP_LOGI(TAG, "Calling ui_manager_init...");
-        if (ui_manager_init(DISPLAY_WIDTH, DISPLAY_HEIGHT) != 0) {
-            ESP_LOGW(TAG, "UI initialization failed - continuing anyway");
-            display_ok = false; // Mark display as not available for UI
-        } else {
-            ESP_LOGI(TAG, "UI system initialized successfully");
-            // Set default theme
-            ESP_LOGI(TAG, "Setting UI theme to AMBER...");
-            ui_manager_set_theme(UI_THEME_AMBER);
-            ESP_LOGI(TAG, "UI theme set");
-        }
-    } else {
-        ESP_LOGI(TAG, "Skipping UI initialization (display not available)");
-    }
+        // Initialize track database (non-critical)
 
-    // Initialize track database (non-critical)
-    ESP_LOGI(TAG, "Initializing track database...");
-    if (!track_db_init()) {
-        ESP_LOGW(TAG, "Track database initialization failed - continuing anyway");
-    } else {
-        ESP_LOGI(TAG, "Track database init complete");
-        
-            // Scan for tracks
-            ESP_LOGI(TAG, "Scanning for MP3 tracks...");
-            uint32_t track_count = track_db_scan();
-            ESP_LOGI(TAG, "Found %lu tracks", track_count);
+        ESP_LOGI(TAG, "Initializing track database...");
+
+        bool track_db_ok = false;
+
+        if (!track_db_init()) {
+
+            ESP_LOGW(TAG, "Track database initialization failed - continuing anyway");
+
+        } else {
+
+            ESP_LOGI(TAG, "Track database init complete");
+
             
-                // Auto-play first track if available
-                if (track_count > 0) {
-                    track_info_t info;
-                    if (track_db_get_track(0, &info)) {
-                        ESP_LOGI(TAG, "Auto-playing first track: %s", info.filename);
-                        
-                        if (audio_player_load(info.filename)) {
-                            audio_player_play();
-                        } else {
-                            ESP_LOGE(TAG, "Failed to load auto-play track");
-                        }
-                    }
-                } else {                ESP_LOGW(TAG, "No tracks found to auto-play");
+
+            // Scan for tracks immediately so UI can show them
+
+            ESP_LOGI(TAG, "Scanning for MP3 tracks...");
+
+            uint32_t track_count = track_db_scan();
+
+            ESP_LOGI(TAG, "Found %lu tracks", track_count);
+
+            track_db_ok = true;
+
+        }
+
+    
+
+        // Initialize UI system (only if display is initialized)
+
+        if (display_ok) {
+
+            ESP_LOGI(TAG, "Initializing UI system...");
+
+            ESP_LOGI(TAG, "UI dimensions: %dx%d", DISPLAY_WIDTH, DISPLAY_HEIGHT);
+
+            ESP_LOGI(TAG, "Calling ui_manager_init...");
+
+            if (ui_manager_init(DISPLAY_WIDTH, DISPLAY_HEIGHT) != 0) {
+
+                ESP_LOGW(TAG, "UI initialization failed - continuing anyway");
+
+                display_ok = false; // Mark display as not available for UI
+
+            } else {
+
+                ESP_LOGI(TAG, "UI system initialized successfully");
+
+                // Set default theme
+
+                ESP_LOGI(TAG, "Setting UI theme to AMBER...");
+
+                ui_manager_set_theme(UI_THEME_AMBER);
+
+                ESP_LOGI(TAG, "UI theme set");
+
             }
-    }
+
+        } else {
+
+            ESP_LOGI(TAG, "Skipping UI initialization (display not available)");
+
+        }
+
+    
+
+        // Auto-play logic
+
+        if (track_db_ok) {
+
+            uint32_t track_count = track_db_get_count();
+
+            if (track_count > 0) {
+
+                track_info_t info;
+
+                if (track_db_get_track(0, &info)) {
+
+                    ESP_LOGI(TAG, "Auto-playing first track: %s", info.filename);
+
+                    
+
+                    if (audio_player_load(info.filename)) {
+
+                        audio_player_play();
+
+                    } else {
+
+                        ESP_LOGE(TAG, "Failed to load auto-play track");
+
+                    }
+
+                }
+
+            } else {
+
+                ESP_LOGW(TAG, "No tracks found to auto-play");
+
+            }
+
+        }
 
     ESP_LOGI(TAG, "========================================");
     ESP_LOGI(TAG, "DJ Deck initialization complete!");
@@ -435,7 +492,7 @@ void app_main(void)
     uint32_t loop_count = 0;
     while (1) {
         loop_count++;
-        if (loop_count % 1000 == 0) {
+        if (loop_count % 100 == 0) {
             ESP_LOGI(TAG, "Main loop running... (iteration %lu)", loop_count);
         }
         
@@ -465,27 +522,20 @@ void app_main(void)
                 uint32_t dur = audio_player_get_duration();
                 float position = dur > 0 ? (float)pos / (float)dur : 0.0f;
                 
-                // Update waveform in UI
-                // TODO: Get actual waveform data from audio player/FFT
-                // For now, use placeholder data
+                // Update waveform in UI with real data
                 static uint8_t waveform_data[480];
-                for (int i = 0; i < 480; i++) {
-                    waveform_data[i] = (uint8_t)(128 + 127 * sin(i * 0.1f + now * 0.001f));
-                }
+                audio_player_get_waveform(waveform_data, 480);
                 ui_manager_update_waveform(waveform_data, 480, position);
                 
                 // Update telemetry (BPM, pitch, phase error)
-                // TODO: Get actual BPM from track_db or audio analysis
-                float bpm = 120.0f; // Placeholder
-                // TODO: Get actual pitch percentage from pitch_control
-                float pitch = 0.0f; // Placeholder
-                // TODO: Calculate phase error from sync system
-                float phase_error = 0.0f; // Placeholder
+                float bpm = 120.0f; // TODO: Get actual BPM
+                float pitch = 0.0f; // TODO: Get actual pitch
+                float phase_error = 0.0f;
                 ui_manager_update_telemetry(bpm, pitch, phase_error);
                 
                 // Update metadata
-                // TODO: Get actual title and key from track_db
-                const char *title = "Track Playing"; // Placeholder
+                const char *title = audio_player_get_track_title();
+                
                 const char *key = "4A"; // Placeholder
                 int32_t time_remaining = dur > pos ? (int32_t)(dur - pos) : -(int32_t)pos;
                 ui_manager_update_metadata(title, key, time_remaining);

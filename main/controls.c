@@ -59,74 +59,67 @@ bool controls_init(button_event_cb_t button_cb, void *arg) {
     button_callback_arg = arg;
     
     // Configure button GPIOs
-    gpio_config_t io_conf = {
-        .intr_type = GPIO_INTR_ANYEDGE,
-        .mode = GPIO_MODE_INPUT,
-        .pin_bit_mask = 0,
-        .pull_down_en = 0,
-        .pull_up_en = 1, // Enable pull-up (buttons connect to GND when pressed)
-    };
+    gpio_config_t io_conf;
+    memset(&io_conf, 0, sizeof(io_conf));
+    io_conf.intr_type = GPIO_INTR_ANYEDGE;
+    io_conf.mode = GPIO_MODE_INPUT;
+    io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    io_conf.pull_up_en = GPIO_PULLUP_ENABLE; // Enable pull-up
     
     // Add all button pins to bit mask
     for (int i = 0; i < BUTTON_COUNT; i++) {
-        if (PIN_IS_VALID(button_pins[i])) {
-            io_conf.pin_bit_mask |= (1ULL << button_pins[i]);
+        int pin = button_pins[i];
+        if (pin >= 0) {
+            io_conf.pin_bit_mask |= (1ULL << pin);
         }
     }
     
-    gpio_config(&io_conf);
+    if (io_conf.pin_bit_mask != 0) {
+        gpio_config(&io_conf);
+    }
     
-    // Install GPIO ISR service
+    // Install GPIO ISR service (ignore error if already installed)
     gpio_install_isr_service(0);
     
     // Attach ISR handlers
     for (int i = 0; i < BUTTON_COUNT; i++) {
-        if (PIN_IS_VALID(button_pins[i])) {
-            gpio_set_intr_type(button_pins[i], GPIO_INTR_ANYEDGE);
-            gpio_isr_handler_add(button_pins[i], gpio_isr_handler, (void*)button_pins[i]);
+        int pin = button_pins[i];
+        if (pin >= 0) {
+            gpio_set_intr_type((gpio_num_t)pin, GPIO_INTR_ANYEDGE);
+            gpio_isr_handler_add((gpio_num_t)pin, gpio_isr_handler, (void*)pin);
         }
     }
     
     // Configure jog wheel encoder pins
     uint64_t jog_mask = 0;
-#if JOG_WHEEL_A_PIN >= 0
-    jog_mask |= (1ULL << JOG_WHEEL_A_PIN);
-#endif
-#if JOG_WHEEL_B_PIN >= 0
-    jog_mask |= (1ULL << JOG_WHEEL_B_PIN);
-#endif
-#if JOG_WHEEL_TOUCH_PIN >= 0
-    jog_mask |= (1ULL << JOG_WHEEL_TOUCH_PIN);
-#endif
+    if (JOG_WHEEL_A_PIN >= 0) jog_mask |= (1ULL << JOG_WHEEL_A_PIN);
+    if (JOG_WHEEL_B_PIN >= 0) jog_mask |= (1ULL << JOG_WHEEL_B_PIN);
+    if (JOG_WHEEL_TOUCH_PIN >= 0) jog_mask |= (1ULL << JOG_WHEEL_TOUCH_PIN);
 
-    gpio_config_t jog_conf = {
-        .intr_type = GPIO_INTR_DISABLE,
-        .mode = GPIO_MODE_INPUT,
-        .pin_bit_mask = jog_mask,
-        .pull_down_en = 0,
-        .pull_up_en = 1,
-    };
     if (jog_mask != 0) {
+        gpio_config_t jog_conf = {
+            .pin_bit_mask = jog_mask,
+            .mode = GPIO_MODE_INPUT,
+            .pull_up_en = GPIO_PULLUP_ENABLE,
+            .pull_down_en = GPIO_PULLDOWN_DISABLE,
+            .intr_type = GPIO_INTR_DISABLE,
+        };
         gpio_config(&jog_conf);
     }
     
     // Configure pitch encoder pins
     uint64_t pitch_mask = 0;
-#if PITCH_ENCODER_A_PIN >= 0
-    pitch_mask |= (1ULL << PITCH_ENCODER_A_PIN);
-#endif
-#if PITCH_ENCODER_B_PIN >= 0
-    pitch_mask |= (1ULL << PITCH_ENCODER_B_PIN);
-#endif
+    if (PITCH_ENCODER_A_PIN >= 0) pitch_mask |= (1ULL << PITCH_ENCODER_A_PIN);
+    if (PITCH_ENCODER_B_PIN >= 0) pitch_mask |= (1ULL << PITCH_ENCODER_B_PIN);
 
-    gpio_config_t pitch_conf = {
-        .intr_type = GPIO_INTR_DISABLE,
-        .mode = GPIO_MODE_INPUT,
-        .pin_bit_mask = pitch_mask,
-        .pull_down_en = 0,
-        .pull_up_en = 1,
-    };
     if (pitch_mask != 0) {
+        gpio_config_t pitch_conf = {
+            .pin_bit_mask = pitch_mask,
+            .mode = GPIO_MODE_INPUT,
+            .pull_up_en = GPIO_PULLUP_ENABLE,
+            .pull_down_en = GPIO_PULLDOWN_DISABLE,
+            .intr_type = GPIO_INTR_DISABLE,
+        };
         gpio_config(&pitch_conf);
     }
     
