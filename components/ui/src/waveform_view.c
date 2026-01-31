@@ -207,7 +207,7 @@ static inline void draw_bar_at(lv_color_t *buffer, int x, uint8_t peak,
  * new columns. Falls back to full redraw on seek/scrub (backwards or large jump).
  * Resolution divider reduces bars drawn for better performance.
  */
-static void draw_waveform(const uint8_t *waveform_data, size_t num_samples, size_t wave_index) {
+static void draw_waveform(const uint8_t *waveform_data, size_t num_samples, size_t wave_index, float precise_time) {
     if (!waveform_canvas || !visible) return;
     
     // Frame throttling: check if we should skip this frame
@@ -382,6 +382,34 @@ static void draw_waveform(const uint8_t *waveform_data, size_t num_samples, size
     }
     // If scroll_delta == 0, no update needed (paused or same frame)
     
+    // Draw Grid Lines (Beat Grid)
+    if (beat_positions && num_beats > 0) {
+        lv_color_t grid_color = lv_color_make(100, 100, 100); // Dim gray
+        float px_per_sec = 172.26f; // 44100 / 256
+        int center_x = view_width / 2;
+        float time_window_half = center_x / px_per_sec;
+        float start_time = precise_time - time_window_half;
+        float end_time = precise_time + time_window_half;
+        
+        for (size_t i = 0; i < num_beats; i++) {
+            float b = beat_positions[i];
+            // Skip beats outside visible window
+            if (b < start_time) continue;
+            if (b > end_time) break;
+            
+            int x = center_x + (int)((b - precise_time) * px_per_sec);
+            if (x >= 0 && x < (int)view_width) {
+                // Draw vertical dotted line overlay
+                for (int y = 0; y < (int)view_height; y += GRID_DOT_SPACING) {
+                    if (y + 1 < (int)view_height) {
+                        buffer[y * view_width + x] = grid_color;
+                        buffer[(y+1) * view_width + x] = grid_color; 
+                    }
+                }
+            }
+        }
+    }
+
 #if PERF_ENABLED
     t_draw_end = perf_get_time_us();
     uint64_t t_invalidate_start = perf_get_time_us();
@@ -509,6 +537,7 @@ void waveform_view_init(uint32_t width, uint32_t height) {
 void waveform_view_update(const uint8_t *waveform_data, 
                          size_t num_samples, 
                          float position,
+                         float precise_time,
                          size_t wave_index) {
     if (!visible || !waveform_canvas) return;
     
@@ -521,7 +550,7 @@ void waveform_view_update(const uint8_t *waveform_data,
     }
     
     // Draw waveform with ring buffer scroll optimization
-    draw_waveform(waveform_data, num_samples, wave_index);
+    draw_waveform(waveform_data, num_samples, wave_index, precise_time);
 }
 
 void waveform_view_show(void) {

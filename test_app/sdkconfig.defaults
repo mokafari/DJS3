@@ -1,0 +1,18 @@
+# Test App SDK Configuration
+# Minimal configuration for running tests
+
+# Target: ESP32-S3
+CONFIG_IDF_TARGET="esp32s3"
+
+# Use PSRAM
+CONFIG_ESP32S3_SPIRAM_SUPPORT=y
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+
+# Logging
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+
+# Unity test framework
+CONFIG_UNITY_ENABLE_FLOAT=y
+CONFIG_UNITY_ENABLE_DOUBLE=y
+

@@ -71,6 +71,7 @@ void ui_manager_set_view(ui_view_type_t view);
 void ui_manager_update_waveform(const uint8_t *waveform_data, 
                                 size_t num_samples, 
                                 float position,
+                                float precise_time,
                                 size_t wave_index);
 
 /**

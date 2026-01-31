@@ -173,6 +173,13 @@ const char* audio_player_get_track_title(void);
 void audio_player_get_waveform(uint8_t *buffer, size_t size);
 
 /**
+ * @brief Get current playback position in seconds (precise)
+ * 
+ * @return Position in seconds as float
+ */
+float audio_player_get_precise_position(void);
+
+/**
  * @brief Get current waveform buffer index (sample-accurate position)
  * 
  * Used for ring buffer scroll optimization in waveform display.

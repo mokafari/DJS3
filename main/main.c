@@ -37,6 +37,10 @@
 #include "track_db.h"
 #include "ui_manager.h"
 
+#ifdef CONFIG_HW_TEST_MODE
+#include "hw_test_harness.h"
+#endif
+
 static const char *TAG = "main";
 
 /**
@@ -307,6 +311,35 @@ void app_main(void)
     print_memory_info();
     ESP_LOGI(TAG, "Memory info printed");
 
+#ifdef CONFIG_HW_TEST_MODE
+    // ========================================
+    // HARDWARE TEST MODE
+    // ========================================
+    ESP_LOGI(TAG, "========================================");
+    ESP_LOGI(TAG, "=== HARDWARE TEST MODE ENABLED ===");
+    ESP_LOGI(TAG, "========================================");
+    printf("\n*** HARDWARE TEST MODE ***\n");
+    fflush(stdout);
+    
+    // Run hardware tests
+    int test_failures = hw_test_run_all();
+    
+    ESP_LOGI(TAG, "========================================");
+    if (test_failures == 0) {
+        ESP_LOGI(TAG, "ALL HARDWARE TESTS PASSED");
+    } else {
+        ESP_LOGE(TAG, "HARDWARE TESTS FAILED: %d failures", test_failures);
+    }
+    ESP_LOGI(TAG, "========================================");
+    
+    // Halt - dev.py will capture the output
+    printf("\n*** TEST MODE COMPLETE - HALTING ***\n");
+    fflush(stdout);
+    while (1) {
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+#endif
+
     // Initialize backlight
     ESP_LOGI(TAG, "Initializing backlight...");
     init_backlight();
@@ -527,12 +560,13 @@ void app_main(void)
                 uint32_t pos = audio_player_get_position();
                 uint32_t dur = audio_player_get_duration();
                 float position = dur > 0 ? (float)pos / (float)dur : 0.0f;
+                float precise_time = audio_player_get_precise_position();
                 
                 // Update waveform in UI with real data
                 static uint8_t waveform_data[480];
                 audio_player_get_waveform(waveform_data, 480);
                 size_t wave_index = audio_player_get_waveform_index();
-                ui_manager_update_waveform(waveform_data, 480, position, wave_index);
+                ui_manager_update_waveform(waveform_data, 480, position, precise_time, wave_index);
                 
                 // Update telemetry (BPM, pitch, phase error)
                 float bpm = 120.0f; // TODO: Get actual BPM

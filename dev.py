@@ -11,6 +11,8 @@ Usage:
     python3 dev.py --reset            # Reset device before monitoring
     python3 dev.py --clean            # Clean build directory
     python3 dev.py --menuconfig       # Open menuconfig
+    python3 dev.py --test             # Build and run test suite (unit tests)
+    python3 dev.py --test-hw          # Build and run hardware tests on device
     python3 dev.py -p /dev/ttyUSB0    # Use different serial port
     python3 dev.py --no-monitor       # Build and flash without monitoring
 """
@@ -20,6 +22,8 @@ import sys
 import subprocess
 import argparse
 import time
+import shutil
+import re
 from pathlib import Path
 
 # Try to import pyserial for direct serial monitoring
@@ -646,6 +650,233 @@ def set_target(env):
     run_command(cmd, env=env, check=False)
     print_success("Target set")
 
+def run_tests(env, port):
+    """Build and run the test suite."""
+    print_header("RUNNING TEST SUITE")
+    
+    test_app_dir = PROJECT_DIR / "test_app"
+    
+    if not test_app_dir.exists():
+        print_error("Test app directory not found: test_app/")
+        print("Create test files in test_app/main/ first.")
+        return False
+    
+    print_step(f"Building test app in {test_app_dir}...")
+    
+    # Build test app
+    cmd = ["idf.py", "-C", str(test_app_dir), "build"]
+    result = subprocess.run(cmd, env=env, cwd=PROJECT_DIR)
+    
+    if result.returncode != 0:
+        print_error("Test app build failed!")
+        return False
+    
+    print_success("Test app built successfully")
+    
+    # Flash test app
+    print_step("Flashing test app...")
+    cmd = ["idf.py", "-C", str(test_app_dir), "-p", port, "flash"]
+    result = subprocess.run(cmd, env=env, cwd=PROJECT_DIR)
+    
+    if result.returncode != 0:
+        print_error("Test app flash failed!")
+        return False
+    
+    print_success("Test app flashed successfully")
+    
+    # Monitor test output
+    print_step("Monitoring test output...")
+    print_header("TEST OUTPUT")
+    cmd = ["idf.py", "-C", str(test_app_dir), "-p", port, "monitor"]
+    subprocess.run(cmd, env=env, cwd=PROJECT_DIR)
+    
+    return True
+
+def run_hw_tests(env, port):
+    """Build and run hardware tests on actual device.
+    
+    This builds the main app with CONFIG_HW_TEST_MODE=y, flashes it,
+    monitors the output for test results, then restores normal config.
+    """
+    print_header("HARDWARE TEST SUITE")
+    
+    sdkconfig_test = PROJECT_DIR / "sdkconfig.test"
+    sdkconfig_normal = PROJECT_DIR / "sdkconfig.normal"
+    sdkconfig = PROJECT_DIR / "sdkconfig"
+    
+    # Check test config exists
+    if not sdkconfig_test.exists():
+        print_error("sdkconfig.test not found!")
+        print("Create sdkconfig.test with CONFIG_HW_TEST_MODE=y")
+        return False
+    
+    # Backup current sdkconfig if not already backed up
+    if sdkconfig.exists() and not sdkconfig_normal.exists():
+        print_step("Backing up current sdkconfig...")
+        shutil.copy(sdkconfig, sdkconfig_normal)
+    
+    try:
+        # Copy test config
+        print_step("Applying test configuration...")
+        shutil.copy(sdkconfig_test, sdkconfig)
+        
+        # Clean and rebuild with test config
+        print_step("Cleaning build directory...")
+        clean_project(env)
+        
+        print_step("Building with hardware test mode...")
+        if not build_project(env):
+            print_error("Build failed!")
+            return False
+        
+        print_success("Test firmware built successfully")
+        
+        # Flash test firmware
+        print_step("Flashing test firmware...")
+        if not flash_project(env, port):
+            print_error("Flash failed!")
+            return False
+        
+        print_success("Test firmware flashed successfully")
+        
+        # Monitor and capture test output
+        print_header("HARDWARE TEST OUTPUT")
+        print_step("Monitoring test output (timeout: 120s)...")
+        print("Press Ctrl+C to abort\n")
+        
+        test_output = capture_hw_test_output(port, timeout=120)
+        
+        # Parse and display results
+        return parse_hw_test_results(test_output)
+        
+    finally:
+        # Restore normal config
+        if sdkconfig_normal.exists():
+            print_step("Restoring normal configuration...")
+            shutil.copy(sdkconfig_normal, sdkconfig)
+            print_success("Configuration restored")
+
+def capture_hw_test_output(port, timeout=120):
+    """Capture hardware test output from serial port."""
+    if not PYSERIAL_AVAILABLE:
+        print_error("pyserial not available - install with: pip install pyserial")
+        return []
+    
+    output_lines = []
+    start_time = time.time()
+    test_started = False
+    test_completed = False
+    
+    try:
+        # Wait for port to be available
+        for i in range(10):
+            try:
+                ser = serial.Serial(port, BAUD_RATE, timeout=1)
+                break
+            except serial.SerialException:
+                if i < 9:
+                    print_step(f"Waiting for port {port}... ({i+1}/10)")
+                    time.sleep(1)
+                else:
+                    print_error(f"Could not open port {port}")
+                    return []
+        
+        print_success(f"Connected to {port}")
+        
+        while time.time() - start_time < timeout:
+            try:
+                line = ser.readline().decode('utf-8', errors='replace').strip()
+                if line:
+                    print(line)
+                    output_lines.append(line)
+                    
+                    # Check for test markers
+                    if "HW_TEST_START" in line:
+                        test_started = True
+                    if "HW_TEST_SUMMARY" in line:
+                        test_completed = True
+                    if "TEST MODE COMPLETE" in line:
+                        break
+                        
+            except Exception as e:
+                if "Device not configured" in str(e):
+                    time.sleep(0.5)
+                    continue
+                print_warning(f"Read error: {e}")
+                
+        ser.close()
+        
+    except KeyboardInterrupt:
+        print_warning("\nTest monitoring interrupted by user")
+    except Exception as e:
+        print_error(f"Serial error: {e}")
+    
+    if not test_started:
+        print_warning("Test start marker not found - device may not have test mode enabled")
+    if not test_completed:
+        print_warning("Test completion marker not found - tests may not have finished")
+        
+    return output_lines
+
+def parse_hw_test_results(output_lines):
+    """Parse hardware test output and display summary."""
+    passed = 0
+    failed = 0
+    results = []
+    
+    for line in output_lines:
+        # Match test results: TEST_PASS|name|message or TEST_FAIL|name|message
+        match = re.match(r'TEST_(PASS|FAIL)\|([^|]+)\|(.+)', line)
+        if match:
+            status, name, message = match.groups()
+            results.append({
+                'status': status,
+                'name': name,
+                'message': message
+            })
+            if status == 'PASS':
+                passed += 1
+            else:
+                failed += 1
+        
+        # Also parse summary line: HW_TEST_SUMMARY|passed=X|failed=Y
+        summary_match = re.match(r'.*HW_TEST_SUMMARY\|passed=(\d+)\|failed=(\d+)', line)
+        if summary_match:
+            passed = int(summary_match.group(1))
+            failed = int(summary_match.group(2))
+    
+    # Display summary
+    print("\n")
+    print_header("HARDWARE TEST RESULTS")
+    
+    total = passed + failed
+    if total == 0:
+        print_warning("No test results captured!")
+        return False
+    
+    # Show individual results
+    for r in results:
+        if r['status'] == 'PASS':
+            print(f"{Colors.OKGREEN}✓ {r['name']}: {r['message']}{Colors.ENDC}")
+        else:
+            print(f"{Colors.FAIL}✗ {r['name']}: {r['message']}{Colors.ENDC}")
+    
+    print("\n" + "="*60)
+    print(f"Total: {total} tests")
+    print(f"{Colors.OKGREEN}Passed: {passed}{Colors.ENDC}")
+    if failed > 0:
+        print(f"{Colors.FAIL}Failed: {failed}{Colors.ENDC}")
+    else:
+        print(f"Failed: {failed}")
+    print("="*60)
+    
+    if failed == 0:
+        print_success(f"ALL {passed} HARDWARE TESTS PASSED!")
+        return True
+    else:
+        print_error(f"{failed} HARDWARE TEST(S) FAILED!")
+        return False
+
 def menuconfig(env):
     """Open menuconfig."""
     print_header("OPENING MENUCONFIG")
@@ -729,6 +960,18 @@ Examples:
         help="Force device into download mode before flashing (useful for bootloop recovery)"
     )
     
+    parser.add_argument(
+        "--test",
+        action="store_true",
+        help="Build and run test suite (uses test_app/)"
+    )
+    
+    parser.add_argument(
+        "--test-hw",
+        action="store_true",
+        help="Build and run hardware tests on device (tests actual components)"
+    )
+    
     args = parser.parse_args()
     
     # Change to project directory
@@ -740,6 +983,16 @@ Examples:
     # Handle menuconfig
     if args.menuconfig:
         menuconfig(env)
+        return
+    
+    # Handle test
+    if args.test:
+        run_tests(env, args.port)
+        return
+    
+    # Handle hardware test
+    if args.test_hw:
+        run_hw_tests(env, args.port)
         return
     
     # Handle clean

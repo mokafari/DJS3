@@ -510,11 +510,20 @@ uint32_t audio_player_get_duration(void) { return total_duration_seconds; }
 
 uint32_t audio_player_get_position(void) {
     // Calculate precise position based on bytes played
-    uint32_t bytes_per_sec = current_sample_rate * 4;
-    if (total_bytes_played > 0) {
+    // 16-bit stereo = 4 bytes per sample frame.
+    // 44100 Hz * 4 = 176400 bytes/sec
+    if (total_bytes_played > 0 && current_sample_rate > 0) {
+        uint32_t bytes_per_sec = current_sample_rate * 4;
         return (uint32_t)(total_bytes_played / bytes_per_sec);
     }
     return 0;
+}
+
+float audio_player_get_precise_position(void) {
+    if (total_bytes_played > 0 && current_sample_rate > 0) {
+        return (float)total_bytes_played / (float)(current_sample_rate * 4);
+    }
+    return 0.0f;
 }
 
 // Stubs

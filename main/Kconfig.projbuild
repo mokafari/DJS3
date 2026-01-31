@@ -1,0 +1,12 @@
+menu "DJ Deck Configuration"
+
+    config HW_TEST_MODE
+        bool "Hardware Test Mode"
+        default n
+        help
+            Enable hardware test mode. When enabled, the firmware will run
+            hardware tests instead of the normal DJ deck application.
+            Use with dev.py --test-hw
+
+endmenu
+
