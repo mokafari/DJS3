@@ -99,6 +99,9 @@ static volatile size_t rb_write_head = 0;
 static volatile size_t rb_read_head = 0;
 static volatile size_t rb_available = 0; // Bytes available to read
 
+// EOF flag - set by decoder when file is fully decoded
+static volatile bool decoder_eof = false;
+
 // Tasks & Sync
 static TaskHandle_t decoder_task_handle = NULL;
 static TaskHandle_t playback_task_handle = NULL;
@@ -152,6 +155,7 @@ static void internal_reset_buffer(void) {
     rb_available = 0;
     total_bytes_played = 0;
     waveform_monotonic_index = 0;  // Reset monotonic counter for new track
+    decoder_eof = false;  // Reset EOF flag for new track
     // Pre-fill waveform with silence (128 = center/zero, or 0 for amplitude mode)
     // We are using amplitude mode (0-255), so 0 is silence.
     memset(waveform_ring_buffer, 0, WAVEFORM_BUFFER_SIZE);
@@ -303,22 +307,33 @@ static void decoder_task(void *pvParameters) {
         // Periodic debug output (every 5 seconds)
         uint32_t now = xTaskGetTickCount() * portTICK_PERIOD_MS;
         if (now - last_debug_time >= 5000) {
-            ESP_LOGI(TAG, "Decoder: frames=%lu | buffer=%.1f%% | file=%s",
+            ESP_LOGI(TAG, "Decoder: frames=%lu | buffer=%.1f%% | file=%s | eof=%d | bytes_left=%d",
                      decode_count, 
                      100.0f * current_available / RING_BUFFER_SIZE,
-                     mp3_file ? "open" : "closed");
+                     mp3_file ? "open" : "closed",
+                     decoder_eof,
+                     file_bytes_left);
             last_debug_time = now;
         }
         
-        if (mp3_file && hMP3Decoder && !buffer_full) {
+        // Skip decoding if EOF already reached or file closed
+        if (mp3_file && hMP3Decoder && !buffer_full && !decoder_eof) {
             int offset = MP3FindSyncWord(file_read_ptr, file_bytes_left);
             if (offset < 0) {
                 if (fill_file_buffer() == 0) {
-                    // EOF reached
+                    // EOF reached - signal to playback task
+                    ESP_LOGI(TAG, "Decoder: EOF reached (sync search), all audio decoded");
+                    decoder_eof = true;
                     vTaskDelay(pdMS_TO_TICKS(100));
                     continue;
                 }
                 offset = MP3FindSyncWord(file_read_ptr, file_bytes_left);
+            }
+            
+            // Also check for EOF using feof() - backup detection
+            if (mp3_file && feof(mp3_file) && file_bytes_left < 1024 && !decoder_eof) {
+                ESP_LOGI(TAG, "Decoder: EOF reached (feof), all audio decoded");
+                decoder_eof = true;
             }
             
             if (offset >= 0) {
@@ -387,14 +402,33 @@ static void decoder_task(void *pvParameters) {
                     xSemaphoreGive(buffer_mutex);
                     
                 } else if (res == ERR_MP3_INDATA_UNDERFLOW) {
-                    fill_file_buffer();
+                    if (fill_file_buffer() == 0) {
+                        // EOF during underflow - no more data coming
+                        if (!decoder_eof) {
+                            ESP_LOGI(TAG, "Decoder: EOF reached (underflow), all audio decoded");
+                            decoder_eof = true;
+                        }
+                    }
                 } else {
+                    // Skip invalid byte and try next
                     file_read_ptr++;
                     file_bytes_left--;
+                    // If we've exhausted the buffer trying to find valid frames, check EOF
+                    if (file_bytes_left == 0 && fill_file_buffer() == 0) {
+                        if (!decoder_eof) {
+                            ESP_LOGI(TAG, "Decoder: EOF reached (exhausted), all audio decoded");
+                            decoder_eof = true;
+                        }
+                    }
                 }
             }
             
-            if (file_bytes_left < 1024) fill_file_buffer();
+            if (file_bytes_left < 1024) {
+                if (fill_file_buffer() == 0 && !decoder_eof) {
+                    ESP_LOGI(TAG, "Decoder: EOF reached (refill), all audio decoded");
+                    decoder_eof = true;
+                }
+            }
             
             // Yield to allow other tasks (important!)
             vTaskDelay(1); 
@@ -518,7 +552,34 @@ static void playback_task(void *pvParameters) {
             blocks_played++;
             
         } else {
+            // Check if track has finished (EOF reached and buffer nearly empty)
+            bool eof_flag = decoder_eof;  // Capture volatile value
+            size_t avail = available_samples;  // Capture value
+            
             xSemaphoreGive(buffer_mutex);
+            
+            // Debug: Log every 200 underruns to see what's happening
+            static uint32_t underrun_debug_counter = 0;
+            if (eof_flag && (underrun_debug_counter++ % 200 == 0)) {
+                ESP_LOGW(TAG, "EOF check: eof=%d avail=%zu threshold=%d should_stop=%d",
+                         eof_flag, avail, DSP_BLOCK_SIZE, (avail < DSP_BLOCK_SIZE));
+            }
+            
+            if (eof_flag && avail < DSP_BLOCK_SIZE) {
+                ESP_LOGI(TAG, "Track finished - buffer drained after EOF (remaining: %zu samples)", avail);
+                player_state = AUDIO_PLAYER_STATE_STOPPED;
+                
+                // Reset waveform to clear old data display
+                xSemaphoreTake(buffer_mutex, portMAX_DELAY);
+                memset(waveform_ring_buffer, 0, WAVEFORM_BUFFER_SIZE);
+                xSemaphoreGive(buffer_mutex);
+                
+                // Reset playback state for next track
+                first_play = true;
+                underrun_debug_counter = 0;
+                continue;
+            }
+            
             underruns++;
             // Buffer underrun - wait for decoder to catch up
             vTaskDelay(pdMS_TO_TICKS(5));
@@ -527,8 +588,8 @@ static void playback_task(void *pvParameters) {
         // Periodic debug output
         uint32_t now = xTaskGetTickCount() * portTICK_PERIOD_MS;
         if (now - last_debug_time >= 5000) {
-            ESP_LOGI(TAG, "Playback: blocks=%lu | underruns=%lu | played=%llu bytes | speed=%.2fx",
-                     blocks_played, underruns, total_bytes_played, speed_ratio);
+            ESP_LOGI(TAG, "Playback: blocks=%lu | underruns=%lu | played=%llu bytes | speed=%.2fx | eof=%d",
+                     blocks_played, underruns, total_bytes_played, speed_ratio, decoder_eof);
             last_debug_time = now;
         }
     }
