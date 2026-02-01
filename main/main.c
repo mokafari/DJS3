@@ -36,6 +36,9 @@
 #include "waveform.h"
 #include "track_db.h"
 #include "ui_manager.h"
+#include "metadata.h"
+#include "analyzer.h"
+#include "library_db.h"
 
 #ifdef CONFIG_HW_TEST_MODE
 #include "hw_test_harness.h"
@@ -353,6 +356,27 @@ void app_main(void)
         ESP_LOGI(TAG, "Storage init complete");
     }
 
+    // Initialize OpenDeck metadata system
+    ESP_LOGI(TAG, "Initializing metadata system...");
+    metadata_init();
+    ESP_LOGI(TAG, "Metadata system initialized");
+    
+    // Initialize library database (fast load from library.db)
+    ESP_LOGI(TAG, "Loading library database...");
+    library_db_init();
+    if (library_db_load()) {
+        ESP_LOGI(TAG, "Library loaded: %u entries", library_db_get_count());
+        // Start background verification
+        library_db_verify_async();
+    } else {
+        ESP_LOGW(TAG, "No library.db found - will rebuild on first scan");
+    }
+    
+    // Initialize background analyzer
+    ESP_LOGI(TAG, "Initializing analyzer...");
+    analyzer_init();
+    ESP_LOGI(TAG, "Analyzer initialized");
+
     // Initialize audio output (non-critical)
     ESP_LOGI(TAG, "Initializing audio output...");
     if (!audio_output_init()) {
@@ -586,18 +610,20 @@ void app_main(void)
                 ui_manager_update_waveform(waveform_data, 480, position, precise_time, wave_index);
                 
                 // Update telemetry (BPM, pitch, phase error)
-                float bpm = 120.0f; // TODO: Get actual BPM
-                float pitch = 0.0f; // TODO: Get actual pitch
+                float bpm = audio_player_get_bpm();
+                if (bpm < 1.0f) bpm = 120.0f;  // Default if not analyzed
+                float pitch_val = pitch_control_get();
                 float phase_error = 0.0f;
-                ui_manager_update_telemetry(bpm, pitch, phase_error);
+                ui_manager_update_telemetry(bpm, pitch_val, phase_error);
                 
                 // Update metadata
-                const char *title = "Track Playing"; // Placeholder
+                const char *title = "Track Playing";
                 if (track_db_get_count() > 0) {
                     title = audio_player_get_track_title();
                 }
                 
-                const char *key = "4A"; // Placeholder
+                // Get key from metadata
+                const char *key = audio_player_get_key_name();
                 ui_manager_update_metadata(title, key, pos, dur);
                 } else {
                     // Clear UI when not playing

@@ -1,21 +1,31 @@
 /**
  * @file track_db.c
- * @brief Track database implementation with ID3 tag parsing
+ * @brief Track database implementation with ID3 tag parsing and .odk metadata
  */
 
 #include "track_db.h"
 #include "storage.h"
 #include "id3_parser.h"
+#include "metadata.h"
+#include "metadata_format.h"
+#include "analyzer.h"
 #include "esp_log.h"
 #include "esp_vfs_fat.h"
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <dirent.h>
 #include <sys/stat.h>
 
 static const char *TAG = "track_db";
 static track_info_t tracks[MAX_TRACKS];
 static uint32_t track_count = 0;
+
+// Camelot key names
+static const char* const KEY_NAMES[] = {
+    "1A", "2A", "3A", "4A", "5A", "6A", "7A", "8A", "9A", "10A", "11A", "12A",
+    "1B", "2B", "3B", "4B", "5B", "6B", "7B", "8B", "9B", "10B", "11B", "12B"
+};
 
 /**
  * @brief Parse ID3v2 tag using ID3 parser
@@ -166,6 +176,32 @@ static uint32_t scan_directory(const char *path, uint32_t start_index) {
                 parse_id3_tag(full_path, track);
                 ESP_LOGI(TAG, "ID3 parse result - has_id3: %d, title: '%s'", track->has_id3, track->title);
                 
+                // Try to load metadata from .odk file
+                track->bpm = 0.0f;
+                track->key_id = 255;  // Unknown
+                track->has_metadata = false;
+                track->has_cues = false;
+                
+                TrackMetadata_t meta;
+                if (metadata_load(full_path, &meta)) {
+                    track->has_metadata = true;
+                    track->bpm = meta.bpm;
+                    track->key_id = meta.key_id;
+                    track->duration_seconds = meta.duration_ms / 1000;
+                    
+                    // Check for hot cues
+                    for (int i = 0; i < NUM_HOTCUES; i++) {
+                        if (meta.hotcues[i].active) {
+                            track->has_cues = true;
+                            break;
+                        }
+                    }
+                    
+                    ESP_LOGD(TAG, "Loaded metadata: BPM=%.1f, Key=%s", 
+                             track->bpm, 
+                             (track->key_id < 24) ? KEY_NAMES[track->key_id] : "?");
+                }
+                
                 // Use filename as title only if ID3 parsing completely failed
                 // If ID3 exists but title is empty, try artist as fallback, then filename
                 if (!track->has_id3) {
@@ -279,3 +315,112 @@ void track_db_clear(void) {
     memset(tracks, 0, sizeof(tracks));
 }
 
+// Sort comparison functions
+static int compare_bpm_asc(const void *a, const void *b) {
+    const track_info_t *ta = (const track_info_t *)a;
+    const track_info_t *tb = (const track_info_t *)b;
+    if (ta->bpm < tb->bpm) return -1;
+    if (ta->bpm > tb->bpm) return 1;
+    return 0;
+}
+
+static int compare_bpm_desc(const void *a, const void *b) {
+    return -compare_bpm_asc(a, b);
+}
+
+static int compare_key_asc(const void *a, const void *b) {
+    const track_info_t *ta = (const track_info_t *)a;
+    const track_info_t *tb = (const track_info_t *)b;
+    return (int)ta->key_id - (int)tb->key_id;
+}
+
+static int compare_key_desc(const void *a, const void *b) {
+    return -compare_key_asc(a, b);
+}
+
+static int compare_title_asc(const void *a, const void *b) {
+    const track_info_t *ta = (const track_info_t *)a;
+    const track_info_t *tb = (const track_info_t *)b;
+    return strcasecmp(ta->title, tb->title);
+}
+
+static int compare_title_desc(const void *a, const void *b) {
+    return -compare_title_asc(a, b);
+}
+
+void track_db_sort_by_bpm(bool ascending) {
+    if (track_count < 2) return;
+    qsort(tracks, track_count, sizeof(track_info_t),
+          ascending ? compare_bpm_asc : compare_bpm_desc);
+    ESP_LOGI(TAG, "Sorted %u tracks by BPM (%s)", track_count, 
+             ascending ? "ascending" : "descending");
+}
+
+void track_db_sort_by_key(bool ascending) {
+    if (track_count < 2) return;
+    qsort(tracks, track_count, sizeof(track_info_t),
+          ascending ? compare_key_asc : compare_key_desc);
+    ESP_LOGI(TAG, "Sorted %u tracks by key (%s)", track_count,
+             ascending ? "ascending" : "descending");
+}
+
+void track_db_sort_by_title(bool ascending) {
+    if (track_count < 2) return;
+    qsort(tracks, track_count, sizeof(track_info_t),
+          ascending ? compare_title_asc : compare_title_desc);
+    ESP_LOGI(TAG, "Sorted %u tracks by title (%s)", track_count,
+             ascending ? "ascending" : "descending");
+}
+
+const char* track_db_get_key_name(uint8_t key_id) {
+    if (key_id < 24) {
+        return KEY_NAMES[key_id];
+    }
+    return "?";
+}
+
+void track_db_refresh_metadata(void) {
+    ESP_LOGI(TAG, "Refreshing metadata for %u tracks...", track_count);
+    
+    TrackMetadata_t meta;
+    int updated = 0;
+    
+    for (uint32_t i = 0; i < track_count; i++) {
+        track_info_t *track = &tracks[i];
+        
+        if (metadata_load(track->filename, &meta)) {
+            track->has_metadata = true;
+            track->bpm = meta.bpm;
+            track->key_id = meta.key_id;
+            track->duration_seconds = meta.duration_ms / 1000;
+            
+            track->has_cues = false;
+            for (int j = 0; j < NUM_HOTCUES; j++) {
+                if (meta.hotcues[j].active) {
+                    track->has_cues = true;
+                    break;
+                }
+            }
+            updated++;
+        }
+    }
+    
+    ESP_LOGI(TAG, "Metadata refresh complete: %d tracks updated", updated);
+}
+
+void track_db_queue_preanalysis(uint32_t center_index) {
+    // Queue nearby unanalyzed tracks for pre-analysis
+    // Queue up to 5 tracks (2 before, current, 2 after)
+    
+    int start = (int)center_index - 2;
+    if (start < 0) start = 0;
+    
+    int end = start + 5;
+    if (end > (int)track_count) end = track_count;
+    
+    for (int i = start; i < end; i++) {
+        if (!tracks[i].has_metadata) {
+            analyzer_queue_preanalysis(tracks[i].filename);
+        }
+    }
+}

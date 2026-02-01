@@ -30,6 +30,12 @@
 #include "filter.h"     // 3-band EQ with soft limiter
 #include "pitch_control.h" // Atomic pitch access
 
+// OpenDeck Metadata System
+#include "metadata.h"
+#include "metadata_format.h"
+#include "analyzer.h"
+#include "cue_points.h"
+
 static const char *TAG = "audio_player";
 
 // ---------------------------------------------------------
@@ -79,6 +85,10 @@ static audio_player_state_t player_state = AUDIO_PLAYER_STATE_STOPPED;
 static audio_player_mode_t player_mode = AUDIO_PLAYER_MODE_SIMPLE;
 static char current_track_title[128] = {0};
 static char current_filepath[256] = {0};
+
+// OpenDeck Metadata (loaded from .odk file)
+static TrackMetadata_t current_metadata;
+static bool metadata_valid = false;
 
 // MP3 Decoder State
 static HMP3Decoder hMP3Decoder = 0;
@@ -185,8 +195,34 @@ static void internal_stop(void) {
 static bool internal_load(const char *filepath) {
     internal_stop();
     
+    // Suspend any running analyzer (protect PSRAM bandwidth)
+    analyzer_suspend();
+    
     // Clear old track title FIRST to ensure it doesn't persist
     memset(current_track_title, 0, sizeof(current_track_title));
+    
+    // Reset metadata state
+    memset(&current_metadata, 0, sizeof(current_metadata));
+    metadata_valid = false;
+    
+    // Initialize cue points for this track (loads from .odk if available)
+    cue_points_init_for_track(filepath);
+    
+    // Try to load pre-analyzed metadata first
+    if (metadata_load(filepath, &current_metadata)) {
+        metadata_valid = true;
+        ESP_LOGI(TAG, "ODK metadata found! BPM: %.1f, Duration: %ums, Key: %s", 
+                 current_metadata.bpm, 
+                 current_metadata.duration_ms,
+                 (current_metadata.key_id < 24) ? CAMELOT_KEYS[current_metadata.key_id] : "?");
+        
+        // Use metadata for duration
+        total_duration_seconds = current_metadata.duration_ms / 1000;
+        duration_calculated = true;
+    } else {
+        ESP_LOGW(TAG, "No ODK metadata, starting analyzer...");
+        // Will start analyzer after file is opened
+    }
     
     // Parse ID3 first to get offsets and metadata
     id3_tag_t tag;
@@ -240,12 +276,18 @@ static bool internal_load(const char *filepath) {
     // Store audio data size (file size minus ID3 tags) for duration calculation
     audio_data_size = file_size - start_offset;
     
-    // Initial estimate at 192kbps (common bitrate) - will be refined after first frame decode
-    // Formula: duration = bytes / (bitrate_kbps * 1000 / 8) = bytes * 8 / (bitrate_kbps * 1000)
-    total_duration_seconds = (audio_data_size * 8) / (192 * 1000);
+    // Use metadata duration if available, otherwise estimate
+    if (!metadata_valid) {
+        // Initial estimate at 192kbps (common bitrate) - will be refined after first frame decode
+        total_duration_seconds = (audio_data_size * 8) / (192 * 1000);
+        duration_calculated = false;
+        
+        // Start background analysis for this track
+        analyzer_start(filepath);
+    }
+    
     current_position_seconds = 0;
     current_bitrate = 0;
-    duration_calculated = false;
     
     // Start buffering immediately
     player_state = AUDIO_PLAYER_STATE_PAUSED; // Loaded but paused
@@ -697,6 +739,9 @@ bool audio_player_load(const char *filepath) {
 }
 
 bool audio_player_play(void) {
+    // Suspend analyzer to protect PSRAM bandwidth during playback
+    analyzer_suspend();
+    
     player_cmd_t cmd = { .type = CMD_PLAY, .filepath = {0} };
     xQueueSend(command_queue, &cmd, portMAX_DELAY);
     return true;
@@ -705,11 +750,17 @@ bool audio_player_play(void) {
 void audio_player_stop(void) {
     player_cmd_t cmd = { .type = CMD_STOP, .filepath = {0} };
     xQueueSend(command_queue, &cmd, portMAX_DELAY);
+    
+    // Resume analyzer now that playback is stopped
+    analyzer_resume();
 }
 
 void audio_player_pause(void) {
     player_cmd_t cmd = { .type = CMD_PAUSE, .filepath = {0} };
     xQueueSend(command_queue, &cmd, portMAX_DELAY);
+    
+    // Resume analyzer while paused
+    analyzer_resume();
 }
 
 void audio_player_resume(void) { audio_player_play(); }
@@ -746,3 +797,97 @@ void audio_player_set_granular_speed(float speed) {}
 void audio_player_set_granular_grain_size(float grain_size_ms) {}
 void audio_player_set_granular_pitch(float pitch) {}
 void audio_player_set_granular_jitter(float jitter) {}
+
+// ---------------------------------------------------------
+// OpenDeck Metadata API
+// ---------------------------------------------------------
+
+bool audio_player_get_overview(uint8_t *buffer, size_t size) {
+    if (!buffer || size == 0) return false;
+    if (!metadata_valid) return false;
+    
+    // Copy from pre-analyzed waveform in metadata
+    size_t copy_size = (size > WAVEFORM_POINTS) ? WAVEFORM_POINTS : size;
+    memcpy(buffer, current_metadata.waveform_overview, copy_size);
+    
+    // Zero-pad if requested more than available
+    if (size > copy_size) {
+        memset(buffer + copy_size, 0, size - copy_size);
+    }
+    
+    return true;
+}
+
+bool audio_player_seek_percent(float percent) {
+    if (!metadata_valid) {
+        ESP_LOGW(TAG, "Cannot seek: no metadata");
+        return false;
+    }
+    
+    // Clamp percent
+    if (percent < 0.0f) percent = 0.0f;
+    if (percent > 1.0f) percent = 1.0f;
+    
+    // Calculate seek table index
+    int index = (int)(percent * (SEEK_POINTS - 1));
+    if (index < 0) index = 0;
+    if (index >= SEEK_POINTS) index = SEEK_POINTS - 1;
+    
+    uint32_t byte_offset = current_metadata.seek_table[index];
+    
+    ESP_LOGI(TAG, "Seeking to %.1f%% -> byte offset %u", percent * 100, byte_offset);
+    
+    // Seek the file
+    if (mp3_file) {
+        fseek(mp3_file, byte_offset, SEEK_SET);
+        
+        // Reset read buffer
+        file_bytes_left = 0;
+        file_read_ptr = file_read_buffer;
+        fill_file_buffer();
+        
+        // Reset ring buffer
+        internal_reset_buffer();
+        
+        // Update position tracking
+        total_bytes_played = (uint64_t)((double)audio_data_size * percent);
+        
+        return true;
+    }
+    
+    return false;
+}
+
+float audio_player_get_bpm(void) {
+    return metadata_valid ? current_metadata.bpm : 0.0f;
+}
+
+int audio_player_get_key(void) {
+    return metadata_valid ? (int)current_metadata.key_id : -1;
+}
+
+const char* audio_player_get_key_name(void) {
+    if (!metadata_valid || current_metadata.key_id >= 24) {
+        return "?";
+    }
+    return CAMELOT_KEYS[current_metadata.key_id];
+}
+
+bool audio_player_has_metadata(void) {
+    return metadata_valid;
+}
+
+uint32_t audio_player_get_position_ms(void) {
+    if (total_bytes_played > 0 && current_sample_rate > 0) {
+        // 16-bit stereo = 4 bytes per sample
+        return (uint32_t)((total_bytes_played * 1000ULL) / (current_sample_rate * 4));
+    }
+    return 0;
+}
+
+uint32_t audio_player_get_duration_ms(void) {
+    if (metadata_valid) {
+        return current_metadata.duration_ms;
+    }
+    return total_duration_seconds * 1000;
+}

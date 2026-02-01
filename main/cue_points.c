@@ -1,47 +1,224 @@
 /**
  * @file cue_points.c
- * @brief Cue point system implementation
+ * @brief Cue point system implementation with .odk persistence
+ * 
+ * Hot cue points are stored in memory and persisted to .odk metadata files.
+ * All save operations are mutex-protected to prevent corruption during
+ * concurrent access from analyzer and UI.
  */
 
 #include "cue_points.h"
+#include "metadata.h"
+#include "metadata_format.h"
 #include "esp_log.h"
 #include <string.h>
 
 static const char *TAG = "cue_points";
-static uint32_t cue_positions[MAX_CUE_POINTS] = {0};
-static bool cue_set[MAX_CUE_POINTS] = {0};
 
-bool cue_points_set(uint8_t cue_index, uint32_t position) {
+// In-memory cue point storage
+static HotCue_t cue_points[MAX_CUE_POINTS] = {0};
+
+// Current track path for persistence
+static char current_track_path[256] = {0};
+
+// Default colors for each cue index
+static const uint16_t default_colors[MAX_CUE_POINTS] = {
+    CUE_COLOR_RED,     // Cue 1
+    CUE_COLOR_ORANGE,  // Cue 2
+    CUE_COLOR_YELLOW,  // Cue 3
+    CUE_COLOR_GREEN,   // Cue 4
+    CUE_COLOR_CYAN,    // Cue 5
+    CUE_COLOR_BLUE,    // Cue 6
+    CUE_COLOR_PURPLE,  // Cue 7
+    CUE_COLOR_WHITE    // Cue 8
+};
+
+/**
+ * @brief Initialize cue points for a track
+ */
+void cue_points_init_for_track(const char *filepath) {
+    // Clear existing cue points
+    memset(cue_points, 0, sizeof(cue_points));
+    memset(current_track_path, 0, sizeof(current_track_path));
+    
+    if (!filepath || strlen(filepath) == 0) {
+        ESP_LOGW(TAG, "No filepath provided, cue points cleared");
+        return;
+    }
+    
+    // Store path for persistence
+    strncpy(current_track_path, filepath, sizeof(current_track_path) - 1);
+    
+    // Try to load cue points from metadata
+    TrackMetadata_t meta;
+    if (metadata_load(filepath, &meta)) {
+        // Copy hot cues from metadata
+        for (int i = 0; i < MAX_CUE_POINTS && i < NUM_HOTCUES; i++) {
+            cue_points[i] = meta.hotcues[i];
+        }
+        
+        // Count how many are set
+        int count = 0;
+        for (int i = 0; i < MAX_CUE_POINTS; i++) {
+            if (cue_points[i].active) count++;
+        }
+        
+        ESP_LOGI(TAG, "Loaded %d cue points from metadata", count);
+    } else {
+        // Initialize with default colors
+        for (int i = 0; i < MAX_CUE_POINTS; i++) {
+            cue_points[i].color_rgb565 = default_colors[i];
+        }
+        ESP_LOGI(TAG, "No metadata, cue points initialized with defaults");
+    }
+}
+
+/**
+ * @brief Set cue point (milliseconds)
+ */
+bool cue_points_set_ms(uint8_t cue_index, uint32_t position_ms) {
     if (cue_index >= MAX_CUE_POINTS) {
         ESP_LOGE(TAG, "Invalid cue index: %d", cue_index);
         return false;
     }
     
-    cue_positions[cue_index] = position;
-    cue_set[cue_index] = true;
-    ESP_LOGI(TAG, "Cue %d set at %d seconds", cue_index, position);
+    cue_points[cue_index].position_ms = position_ms;
+    cue_points[cue_index].active = 1;
+    
+    // Set default color if not already set
+    if (cue_points[cue_index].color_rgb565 == 0) {
+        cue_points[cue_index].color_rgb565 = default_colors[cue_index];
+    }
+    
+    ESP_LOGI(TAG, "Cue %d set at %u ms (color: 0x%04X)", 
+             cue_index, position_ms, cue_points[cue_index].color_rgb565);
+    
+    // Persist to metadata
+    cue_points_save();
+    
     return true;
 }
 
-uint32_t cue_points_get(uint8_t cue_index) {
-    if (cue_index >= MAX_CUE_POINTS || !cue_set[cue_index]) {
-        return 0;
-    }
-    return cue_positions[cue_index];
+/**
+ * @brief Set cue point (legacy, seconds)
+ */
+bool cue_points_set(uint8_t cue_index, uint32_t position) {
+    return cue_points_set_ms(cue_index, position * 1000);
 }
 
+/**
+ * @brief Get cue point position (milliseconds)
+ */
+uint32_t cue_points_get_ms(uint8_t cue_index) {
+    if (cue_index >= MAX_CUE_POINTS || !cue_points[cue_index].active) {
+        return 0;
+    }
+    return cue_points[cue_index].position_ms;
+}
+
+/**
+ * @brief Get cue point position (legacy, seconds)
+ */
+uint32_t cue_points_get(uint8_t cue_index) {
+    return cue_points_get_ms(cue_index) / 1000;
+}
+
+/**
+ * @brief Check if cue is set
+ */
+bool cue_points_is_set(uint8_t cue_index) {
+    if (cue_index >= MAX_CUE_POINTS) {
+        return false;
+    }
+    return cue_points[cue_index].active != 0;
+}
+
+/**
+ * @brief Get cue color
+ */
+uint16_t cue_points_get_color(uint8_t cue_index) {
+    if (cue_index >= MAX_CUE_POINTS) {
+        return CUE_COLOR_WHITE;
+    }
+    return cue_points[cue_index].color_rgb565;
+}
+
+/**
+ * @brief Set cue color
+ */
+void cue_points_set_color(uint8_t cue_index, uint16_t color) {
+    if (cue_index >= MAX_CUE_POINTS) {
+        return;
+    }
+    cue_points[cue_index].color_rgb565 = color;
+    
+    // Persist if cue is set
+    if (cue_points[cue_index].active) {
+        cue_points_save();
+    }
+}
+
+/**
+ * @brief Clear a cue point
+ */
 void cue_points_clear(uint8_t cue_index) {
     if (cue_index >= MAX_CUE_POINTS) {
         return;
     }
-    cue_set[cue_index] = false;
-    cue_positions[cue_index] = 0;
+    
+    cue_points[cue_index].active = 0;
+    cue_points[cue_index].position_ms = 0;
+    // Keep color for next use
+    
     ESP_LOGI(TAG, "Cue %d cleared", cue_index);
+    
+    // Persist change
+    cue_points_save();
 }
 
+/**
+ * @brief Clear all cue points
+ */
 void cue_points_clear_all(void) {
-    memset(cue_set, 0, sizeof(cue_set));
-    memset(cue_positions, 0, sizeof(cue_positions));
+    for (int i = 0; i < MAX_CUE_POINTS; i++) {
+        cue_points[i].active = 0;
+        cue_points[i].position_ms = 0;
+    }
+    
     ESP_LOGI(TAG, "All cue points cleared");
+    
+    // Persist change
+    cue_points_save();
 }
 
+/**
+ * @brief Save cue points to metadata file
+ */
+bool cue_points_save(void) {
+    if (current_track_path[0] == '\0') {
+        ESP_LOGW(TAG, "No track path set, cannot save cue points");
+        return false;
+    }
+    
+    // Load existing metadata
+    TrackMetadata_t meta;
+    if (!metadata_load(current_track_path, &meta)) {
+        ESP_LOGW(TAG, "No existing metadata for %s, cannot save cue points", 
+                 current_track_path);
+        return false;
+    }
+    
+    // Update hot cues
+    for (int i = 0; i < MAX_CUE_POINTS && i < NUM_HOTCUES; i++) {
+        meta.hotcues[i] = cue_points[i];
+    }
+    
+    // Save back
+    if (metadata_save(current_track_path, &meta)) {
+        ESP_LOGI(TAG, "Cue points saved to metadata");
+        return true;
+    } else {
+        ESP_LOGE(TAG, "Failed to save cue points");
+        return false;
+    }
+}

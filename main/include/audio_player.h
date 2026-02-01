@@ -188,6 +188,76 @@ float audio_player_get_precise_position(void);
  */
 size_t audio_player_get_waveform_index(void);
 
+// ============================================================================
+// Metadata API (OpenDeck .odk integration)
+// ============================================================================
+
+/**
+ * @brief Get pre-analyzed overview waveform for navigation stripe
+ * 
+ * Returns 480 bytes of normalized amplitude data from .odk file.
+ * This is different from get_waveform() which returns real-time data.
+ * 
+ * @param buffer Output buffer (must be at least size bytes)
+ * @param size   Requested size (max WAVEFORM_POINTS=480)
+ * @return true if overview available, false if not analyzed yet
+ */
+bool audio_player_get_overview(uint8_t *buffer, size_t size);
+
+/**
+ * @brief Seek to percentage position using VBR-aware seek table
+ * 
+ * Uses pre-analyzed seek table from .odk file for accurate VBR seeking.
+ * 
+ * @param percent Position as percentage (0.0 to 1.0)
+ * @return true on success, false if no metadata available
+ */
+bool audio_player_seek_percent(float percent);
+
+/**
+ * @brief Get detected BPM from metadata
+ * 
+ * @return BPM value (e.g., 128.0) or 0.0 if not analyzed
+ */
+float audio_player_get_bpm(void);
+
+/**
+ * @brief Get detected musical key from metadata
+ * 
+ * @return Camelot key ID (0-23) or -1 if not analyzed
+ */
+int audio_player_get_key(void);
+
+/**
+ * @brief Get Camelot key name string
+ * 
+ * @return Key name string (e.g., "8A", "5B") or "?" if unknown
+ */
+const char* audio_player_get_key_name(void);
+
+/**
+ * @brief Check if current track has complete metadata analysis
+ * 
+ * @return true if waveform and BPM are available
+ */
+bool audio_player_has_metadata(void);
+
+/**
+ * @brief Get position in milliseconds
+ * 
+ * @return Current playback position in milliseconds
+ */
+uint32_t audio_player_get_position_ms(void);
+
+/**
+ * @brief Get duration in milliseconds
+ * 
+ * Uses metadata if available, otherwise calculates from bitrate.
+ * 
+ * @return Track duration in milliseconds
+ */
+uint32_t audio_player_get_duration_ms(void);
+
 #ifdef __cplusplus
 }
 #endif
