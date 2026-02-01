@@ -1,0 +1,839 @@
+# PT1210-ESP32/DJS3 Project Ruleset
+
+**Version:** 1.0  
+**Last Updated:** January 2025  
+**Project:** ESP32-S3 DJ Controller/Deck
+
+---
+
+## Table of Contents
+
+1. [Code Style & Conventions](#code-style--conventions)
+2. [Architecture & Organization](#architecture--organization)
+3. [ESP-IDF Specific Practices](#esp-idf-specific-practices)
+4. [Performance Guidelines](#performance-guidelines)
+5. [Error Handling](#error-handling)
+6. [Documentation Standards](#documentation-standards)
+7. [Memory Management](#memory-management)
+8. [Build & Development](#build--development)
+9. [Git Workflow](#git-workflow)
+10. [Testing Guidelines](#testing-guidelines)
+
+---
+
+## Code Style & Conventions
+
+### C/C++ Standards
+
+- **C Standard:** C11 (`CMAKE_C_STANDARD 11`)
+- **C++ Standard:** C++17 (`CMAKE_CXX_STANDARD 17`)
+- **Compiler:** GCC (ESP-IDF toolchain)
+
+### Naming Conventions
+
+#### Functions
+- **C Functions:** `snake_case` with descriptive prefixes
+  ```c
+  audio_player_init()
+  waveform_view_update()
+  ui_manager_set_theme()
+  ```
+- **Static Functions:** `static` keyword, same naming as public functions
+- **Private/Internal Functions:** Prefix with module name, no underscore separation
+  ```c
+  static void update_display_cache(...)  // In waveform_view.c
+  ```
+
+#### Variables
+- **Local Variables:** `snake_case`
+  ```c
+  uint32_t track_count = 0;
+  float bpm = 120.0f;
+  ```
+- **Static/Module Variables:** `s_` prefix
+  ```c
+  static bool s_initialized = false;
+  static ui_theme_t s_current_theme = UI_THEME_AMBER;
+  ```
+- **Constants:** `UPPER_SNAKE_CASE`
+  ```c
+  #define WAVEFORM_BARS 480
+  #define BOARD_PSRAM_SIZE_MB 8
+  ```
+
+#### Types
+- **Structs:** `snake_case_t` suffix
+  ```c
+  typedef struct {
+      char filename[256];
+      char title[128];
+  } track_info_t;
+  ```
+- **Enums:** `UPPER_SNAKE_CASE` values, `snake_case_t` type
+  ```c
+  typedef enum {
+      UI_THEME_AMBER = 0,
+      UI_THEME_CYAN,
+      UI_THEME_GREEN
+  } ui_theme_t;
+  ```
+
+#### Macros
+- **Constants:** `UPPER_SNAKE_CASE`
+- **Functions:** `UPPER_SNAKE_CASE` with parentheses
+  ```c
+  #define PIN_IS_VALID(pin) ((pin) >= 0)
+  #define BRIGHTNESS_TO_DUTY(b) ((uint32_t)((b) * LEDC_MAX_DUTY / 255))
+  ```
+
+### File Organization
+
+#### Header Files
+- **Header Guards:** Use `#ifndef/#define/#endif` pattern
+  ```c
+  #ifndef MODULE_NAME_H
+  #define MODULE_NAME_H
+  // ... content ...
+  #endif /* MODULE_NAME_H */
+  ```
+- **C++ Compatibility:** Always include `extern "C"` guards
+  ```c
+  #ifdef __cplusplus
+  extern "C" {
+  #endif
+  // ... declarations ...
+  #ifdef __cplusplus
+  }
+  #endif
+  ```
+- **Includes:** Order should be:
+  1. System headers (`<stdio.h>`, `<string.h>`)
+  2. ESP-IDF headers (`"esp_log.h"`, `"freertos/FreeRTOS.h"`)
+  3. Project headers (`"board_config.h"`, `"audio_player.h"`)
+
+#### Source Files
+- **Structure:**
+  1. File header comment with `@file` and `@brief`
+  2. Includes (system, ESP-IDF, project)
+  3. Static constants and variables
+  4. Static function declarations/definitions
+  5. Public function implementations
+
+### Code Formatting
+
+#### Indentation
+- **Tabs vs Spaces:** Use **4 spaces** (ESP-IDF convention)
+- **Line Length:** Maximum 100 characters (soft limit, 120 hard limit)
+
+#### Braces
+- **Functions:** Opening brace on new line
+  ```c
+  int function_name(void)
+  {
+      // code
+  }
+  ```
+- **Control Structures:** Opening brace on same line
+  ```c
+  if (condition) {
+      // code
+  } else {
+      // code
+  }
+  ```
+
+#### Spacing
+- **Operators:** Spaces around binary operators
+  ```c
+  int result = a + b * c;
+  ```
+- **Function Calls:** No space before opening parenthesis
+  ```c
+  audio_player_init();
+  ```
+- **Pointers:** Space before `*` in declarations
+  ```c
+  void *ptr;
+  const char *str;
+  ```
+
+#### Comments
+- **Single Line:** `//` for brief comments
+- **Multi-line:** `/* */` for longer explanations
+- **Doxygen:** Use `/** */` for function documentation
+  ```c
+  /**
+   * @brief Initialize the audio player subsystem
+   * @return true if successful, false otherwise
+   */
+  bool audio_player_init(void);
+  ```
+
+---
+
+## Architecture & Organization
+
+### Project Structure
+
+```
+DJS3-idf-copy/
+├── main/                    # Main application
+│   ├── *.c                  # Source files
+│   ├── CMakeLists.txt       # Component build config
+│   └── include/             # Public headers
+│       └── *.h
+├── components/              # Reusable components
+│   └── <component>/
+│       ├── CMakeLists.txt
+│       ├── include/
+│       └── src/
+├── build/                   # Build artifacts (gitignored)
+├── CMakeLists.txt           # Root CMakeLists
+├── sdkconfig                # ESP-IDF config (gitignored)
+├── sdkconfig.defaults       # Default config (committed)
+└── dev.py                   # Development script
+```
+
+### Component Design
+
+#### Component Structure
+- **Self-contained:** Each component should be independently testable
+- **Clear Interface:** Public API in `include/`, implementation in `src/`
+- **Dependencies:** Minimize inter-component dependencies
+- **CMakeLists:** Each component has its own `CMakeLists.txt`
+
+#### Module Responsibilities
+
+**Main Application (`main/`):**
+- System initialization
+- Component orchestration
+- Main event loop
+- High-level application logic
+
+**Components (`components/`):**
+- **`ui/`:** LVGL-based UI system
+  - Theme management
+  - View management (waveform, crate, metadata, telemetry)
+  - Touch handling
+- **`esp8266audio/`:** Audio decoding (MP3, etc.)
+- **`fx/`:** Audio effects
+- **`timestretch/`:** Time-stretching algorithms
+- **`sync/`:** Synchronization utilities
+
+### Module Communication
+
+#### Data Flow
+- **Top-down:** Main → Components → Sub-components
+- **Event-driven:** Use callbacks for user input and state changes
+- **State Management:** Centralized state in main, distributed updates
+
+#### Function Signatures
+- **Initialization:** Return `esp_err_t` or `bool` (success/failure)
+  ```c
+  esp_err_t component_init(void);
+  bool component_init(void);
+  ```
+- **Configuration:** Use setter/getter pattern
+  ```c
+  void ui_manager_set_theme(ui_theme_t theme);
+  ui_theme_t ui_manager_get_theme(void);
+  ```
+- **Callbacks:** Use function pointers with `void *` context
+  ```c
+  typedef void (*button_callback_t)(button_id_t button, bool pressed, void *arg);
+  ```
+
+---
+
+## ESP-IDF Specific Practices
+
+### Initialization Order
+
+**Critical:** Follow this initialization order:
+
+1. **NVS (Non-Volatile Storage)**
+   ```c
+   nvs_flash_init();
+   ```
+
+2. **Hardware Peripherals**
+   - Display
+   - Audio (I2S)
+   - Storage (SD card, USB)
+   - Touch controller
+
+3. **Application Components**
+   - Audio player
+   - UI system
+   - Controls
+   - Track database
+
+4. **Main Loop**
+   - Event processing
+   - State updates
+   - UI refresh
+
+### Logging
+
+#### Log Levels
+- **ESP_LOGE:** Errors (system failures, critical issues)
+- **ESP_LOGW:** Warnings (non-critical issues, fallbacks)
+- **ESP_LOGI:** Information (initialization, state changes)
+- **ESP_LOGD:** Debug (detailed execution flow)
+- **ESP_LOGV:** Verbose (very detailed, high-frequency)
+
+#### Logging Best Practices
+- **Tag:** Use module name as tag
+  ```c
+  static const char *TAG = "audio_player";
+  ESP_LOGI(TAG, "Audio player initialized");
+  ```
+- **Format Strings:** Use appropriate format specifiers
+  ```c
+  ESP_LOGI(TAG, "Found %lu tracks", track_count);
+  ESP_LOGI(TAG, "BPM: %.2f", bpm);
+  ```
+- **Performance:** Avoid logging in hot paths (audio callbacks, UI render loops)
+
+### FreeRTOS Usage
+
+#### Task Creation
+- **Stack Size:** Allocate sufficient stack (minimum 2KB, typical 4-8KB)
+  ```c
+  xTaskCreate(audio_task, "audio", 4096, NULL, 5, NULL);
+  ```
+- **Priority:** Use appropriate priorities
+  - Audio tasks: High priority (5-10)
+  - UI tasks: Medium priority (3-5)
+  - Background tasks: Low priority (1-2)
+
+#### Task Communication
+- **Queues:** Use FreeRTOS queues for inter-task communication
+- **Semaphores:** Use for resource locking
+- **Mutexes:** Use for shared resource protection
+
+#### Delays
+- **vTaskDelay:** Use `pdMS_TO_TICKS()` for millisecond delays
+  ```c
+  vTaskDelay(pdMS_TO_TICKS(100));
+  ```
+
+### GPIO Configuration
+
+- **Use `board_config.h`:** All pin definitions must be in `main/include/board_config.h`
+- **Validation:** Check pin validity before use
+  ```c
+  if (PIN_IS_VALID(DISPLAY_CS_PIN)) {
+      gpio_config(&io_conf);
+  }
+  ```
+- **Documentation:** Comment pin assignments with purpose
+  ```c
+  #define DISPLAY_CS_PIN    45  // LCD_CS
+  ```
+
+### PSRAM Usage
+
+- **Allocation:** Use `heap_caps_malloc()` with `MALLOC_CAP_SPIRAM`
+  ```c
+  void *ptr = heap_caps_malloc(size, MALLOC_CAP_SPIRAM);
+  ```
+- **Verification:** Always check PSRAM availability
+  ```c
+  if (esp_psram_get_size() > 0) {
+      // Use PSRAM
+  }
+  ```
+- **Large Buffers:** Use PSRAM for audio buffers, waveform data, large arrays
+
+---
+
+## Performance Guidelines
+
+### Critical Paths
+
+#### Audio Processing
+- **Latency Target:** <10ms (128 samples @ 44.1kHz)
+- **No Blocking:** Never block audio callbacks
+- **DMA:** Use I2S DMA for audio output
+- **Dual-Core:** Run audio on Core 0, UI on Core 1
+
+#### UI Rendering
+- **Frame Rate:** Target 60 FPS (16.67ms per frame)
+- **Direct Buffer Access:** Use direct canvas buffer writes (not `lv_canvas_set_px`)
+  ```c
+  // Fast: Direct buffer access
+  uint16_t *buf = (uint16_t *)lv_canvas_get_buf(canvas);
+  buf[y * width + x] = color;
+  
+  // Slow: Avoid this in hot paths
+  lv_canvas_set_px(canvas, x, y, color);
+  ```
+- **Partial Updates:** Only redraw changed regions when possible
+
+#### Waveform Rendering
+- **Scrolling:** Use ring buffer and memmove for efficient scrolling
+- **Resolution:** Support configurable resolution (1x, 2x, 4x, 8x)
+- **Cache:** Cache stable display data to prevent redraws
+
+### Optimization Rules
+
+1. **Profile First:** Don't optimize without profiling
+2. **Hot Paths:** Focus optimization on frequently called code
+3. **Memory Access:** Minimize memory allocations in loops
+4. **Function Calls:** Inline small, frequently called functions
+5. **Compiler:** Use `-O2` or `-Os` optimization flags
+
+### Anti-Patterns
+
+❌ **Don't:**
+- Allocate memory in audio callbacks
+- Use floating-point in interrupt handlers
+- Log in hot paths
+- Use `lv_canvas_set_px` in render loops
+- Block tasks unnecessarily
+
+✅ **Do:**
+- Pre-allocate buffers
+- Use fixed-point math where possible
+- Batch operations
+- Use direct buffer access
+- Use non-blocking APIs
+
+---
+
+## Error Handling
+
+### Return Values
+
+#### ESP-IDF Functions
+- **esp_err_t:** Use `ESP_ERROR_CHECK()` for critical errors
+  ```c
+  esp_err_t ret = nvs_flash_init();
+  ESP_ERROR_CHECK(ret);
+  ```
+
+#### Application Functions
+- **bool:** Return `true` on success, `false` on failure
+  ```c
+  bool audio_player_init(void) {
+      if (error_condition) {
+          ESP_LOGE(TAG, "Initialization failed: reason");
+          return false;
+      }
+      return true;
+  }
+  ```
+
+#### Optional Values
+- **NULL Checks:** Always check for NULL before dereferencing
+  ```c
+  if (ptr == NULL) {
+      ESP_LOGE(TAG, "Null pointer");
+      return false;
+  }
+  ```
+
+### Error Recovery
+
+- **Graceful Degradation:** Continue operation with reduced functionality
+  ```c
+  if (!audio_output_init()) {
+      ESP_LOGW(TAG, "Audio output failed - continuing without audio");
+      // Continue initialization
+  }
+  ```
+- **State Validation:** Verify state before operations
+  ```c
+  if (!s_initialized) {
+      ESP_LOGW(TAG, "Component not initialized");
+      return false;
+  }
+  ```
+
+### Assertions
+
+- **Development:** Use `assert()` for development-time checks
+- **Production:** Remove or replace with error handling in production builds
+
+---
+
+## Documentation Standards
+
+### File Headers
+
+Every source file must have a header comment:
+
+```c
+/**
+ * @file module_name.c
+ * @brief Brief description of the module's purpose
+ * 
+ * Detailed description of the module, its responsibilities,
+ * and key design decisions.
+ */
+```
+
+### Function Documentation
+
+Use Doxygen-style comments for public functions:
+
+```c
+/**
+ * @brief Initialize the audio player subsystem
+ * 
+ * Sets up audio decoding, I2S output, and playback state.
+ * Must be called before any other audio_player_* functions.
+ * 
+ * @return true if initialization successful, false otherwise
+ * 
+ * @note This function is not thread-safe. Call from main thread only.
+ * 
+ * @see audio_player_deinit()
+ */
+bool audio_player_init(void);
+```
+
+### Parameter Documentation
+
+```c
+/**
+ * @brief Update waveform display with new audio data
+ * 
+ * @param waveform_data Pointer to waveform peak data (0-255)
+ * @param num_samples Number of samples in waveform_data
+ * @param position Playback position (0.0 to 1.0)
+ * @param wave_index Current waveform buffer index
+ */
+void ui_manager_update_waveform(const uint8_t *waveform_data,
+                                size_t num_samples,
+                                float position,
+                                size_t wave_index);
+```
+
+### Inline Comments
+
+- **Why, not What:** Explain reasoning, not obvious code
+- **Complex Logic:** Comment complex algorithms and optimizations
+- **Magic Numbers:** Explain non-obvious constants
+  ```c
+  // Threshold for full redraw (prevents excessive scrolling)
+  #define SCROLL_DELTA_THRESHOLD 20
+  ```
+
+---
+
+## Memory Management
+
+### Allocation Strategies
+
+#### Static Allocation
+- **Prefer:** Use static arrays for fixed-size buffers
+  ```c
+  static uint8_t waveform_buffer[480];
+  ```
+
+#### Dynamic Allocation
+- **Heap:** Use `malloc()`/`free()` for variable-size data
+- **PSRAM:** Use `heap_caps_malloc()` for large buffers
+- **Always Free:** Match every `malloc()` with `free()`
+
+#### Stack Allocation
+- **Small Buffers:** Use stack for small, temporary buffers (<1KB)
+- **Large Buffers:** Avoid large stack allocations (risk of stack overflow)
+
+### Memory Safety
+
+- **Null Checks:** Always check allocation success
+  ```c
+  void *ptr = malloc(size);
+  if (ptr == NULL) {
+      ESP_LOGE(TAG, "Memory allocation failed");
+      return false;
+  }
+  ```
+- **Bounds Checking:** Validate array indices
+  ```c
+  if (index >= array_size) {
+      ESP_LOGE(TAG, "Index out of bounds: %d >= %d", index, array_size);
+      return false;
+  }
+  ```
+- **Use-After-Free:** Never use freed pointers
+- **Double-Free:** Never free the same pointer twice
+
+### Memory Leaks
+
+- **Track Allocations:** Keep track of all dynamic allocations
+- **Free on Error:** Free allocated memory in error paths
+- **Component Cleanup:** Implement `*_deinit()` functions to free resources
+
+---
+
+## Build & Development
+
+### Build System
+
+- **CMake:** Use ESP-IDF's CMake build system
+- **Configuration:** Use `sdkconfig.defaults` for default settings
+- **Menuconfig:** Use `idf.py menuconfig` for configuration changes
+
+### Development Script
+
+- **Primary Tool:** Use `dev.py` for all development tasks
+  ```bash
+  ./dev.py                    # Build, flash, monitor
+  ./dev.py --build-only       # Build only
+  ./dev.py --flash-only       # Flash only
+  ./dev.py --monitor-only     # Monitor only
+  ./dev.py --clean            # Clean build
+  ```
+
+### Build Configuration
+
+- **Target:** ESP32-S3 (`idf.py set-target esp32s3`)
+- **CPU Frequency:** 240MHz (default)
+- **PSRAM:** 8MB OSPI PSRAM enabled
+- **Flash:** 4MB QSPI Flash
+
+### Serial Communication
+
+- **Default Port:** `/dev/cu.usbmodem2101` (configured in `dev.py`)
+- **Baud Rate:** 115200
+- **Monitor:** Use `idf.py monitor` or `./dev.py --monitor-only`
+
+### Debugging
+
+- **Logging:** Use ESP-IDF logging for debugging
+- **GDB:** Use `idf.py gdb` for debugging (requires OpenOCD)
+- **Core Dumps:** Enable core dumps for crash analysis
+
+---
+
+## Git Workflow
+
+### Branch Naming
+
+- **Feature Branches:** `feature/description`
+- **Bug Fixes:** `fix/description`
+- **Hotfixes:** `hotfix/description`
+- **Refactoring:** `refactor/description`
+
+### Commit Messages
+
+- **Format:** Use conventional commit format
+  ```
+  type(scope): subject
+
+  body (optional)
+
+  footer (optional)
+  ```
+- **Types:** `feat`, `fix`, `refactor`, `docs`, `style`, `test`, `chore`
+- **Examples:**
+  ```
+  feat(audio): add granular synthesis engine
+  fix(ui): remove waveform ghosting artifacts
+  refactor(waveform): optimize buffer access
+  ```
+
+### File Organization
+
+- **Ignore:** Add build artifacts to `.gitignore`
+  ```
+  build/
+  sdkconfig
+  sdkconfig.old
+  *.bin
+  *.elf
+  ```
+
+### Code Review
+
+- **Self-Review:** Review your own code before committing
+- **Testing:** Test changes before pushing
+- **Documentation:** Update documentation for API changes
+
+---
+
+## Testing Guidelines
+
+### Testing Framework
+
+The project uses a comprehensive integration testing framework. See **TESTING_FRAMEWORK.mdc** for complete documentation.
+
+**Quick Reference:**
+- **Test Runner**: `python integration_tests/run_integration_test.py <test_app>`
+- **Test Apps**: Located in `integration_tests/test_apps/`
+- **Host Tests**: Python pytest scripts in `integration_tests/host_tests/`
+
+### Unit Testing
+
+- **Framework:** ESP-IDF Unity test framework
+- **Location:** Place tests in `test/` directory
+- **Naming:** `test_<module>.c`
+- **Execution:** `idf.py -T test flash monitor`
+
+### Integration Testing
+
+- **Framework:** ESP-IDF test apps + pytest-embedded
+- **Location:** `integration_tests/test_apps/`
+- **Hardware:** Tests run on actual ESP32-S3 hardware
+- **Automation:** Automated via `run_integration_test.py` script
+- **Categories:**
+  - Audio integration (I2S, MP3 playback)
+  - Display integration (QSPI, rendering, touch)
+  - Storage integration (SD card, USB host)
+  - Controls integration (GPIO, encoders)
+  - End-to-end workflows
+
+### Test Execution
+
+**Complete Workflow:**
+```bash
+# Build, flash, and test
+python integration_tests/run_integration_test.py audio_integration
+
+# Run all tests
+python integration_tests/run_integration_test.py all
+```
+
+**Manual Execution:**
+```bash
+cd integration_tests/test_apps/audio_integration
+idf.py build flash monitor
+```
+
+### Test Coverage
+
+- **Critical Paths:** All hardware interfaces tested
+- **Error Paths:** Error handling and edge cases covered
+- **Hardware Interfaces:** I2S, QSPI, GPIO, I2C, SPI, USB
+- **User Workflows:** Complete end-to-end scenarios
+
+### Test Results
+
+- **Location:** `integration_tests/results/`
+- **Formats:** JSON (machine-readable), HTML (human-readable)
+- **Review:** Check results after test execution
+
+### Manual Testing
+
+- **Checklist:** Maintain a testing checklist for common scenarios
+- **Regression:** Test previously fixed bugs to prevent regression
+- **Hardware Verification:** Visual inspection for display/audio tests
+
+**For detailed testing framework documentation, see TESTING_FRAMEWORK.mdc**
+
+---
+
+## Project-Specific Rules
+
+### Audio Processing
+
+- **Sample Rate:** 44.1kHz (CD quality)
+- **Buffer Size:** <128 samples for low latency
+- **Format:** 16-bit PCM, stereo
+- **DAC:** PCM5102A or ES8388 (external DAC required)
+
+### UI System
+
+- **Theme:** Support AMBER, CYAN, GREEN themes
+- **Resolution:** 480x272 (RGB565)
+- **Frame Rate:** Target 60 FPS
+- **Touch:** GT911 capacitive touch controller
+
+### Waveform Display
+
+- **Bars:** 480 bars (configurable resolution)
+- **Scrolling:** Fixed playhead, scrolling waveform
+- **Performance:** Direct buffer access, no ghosting
+- **Grid:** Beat grid overlay support
+
+### Track Management
+
+- **Formats:** MP3, FLAC, WAV
+- **Storage:** SD card and USB host
+- **Metadata:** ID3 tag support
+- **Database:** In-memory track database
+
+---
+
+## Code Review Checklist
+
+Before submitting code, verify:
+
+- [ ] Code follows naming conventions
+- [ ] Functions are documented with Doxygen comments
+- [ ] Error handling is appropriate
+- [ ] Memory is properly managed (no leaks)
+- [ ] Performance considerations addressed
+- [ ] ESP-IDF best practices followed
+- [ ] Builds without warnings
+- [ ] Tested on hardware (if applicable)
+- [ ] Integration tests pass (run `python integration_tests/run_integration_test.py <component>`)
+- [ ] Commit message follows conventions
+
+---
+
+## Quick Reference
+
+### Common Patterns
+
+**Initialization:**
+```c
+esp_err_t component_init(void) {
+    if (s_initialized) {
+        ESP_LOGW(TAG, "Already initialized");
+        return ESP_OK;
+    }
+    
+    // Initialize...
+    s_initialized = true;
+    ESP_LOGI(TAG, "Component initialized");
+    return ESP_OK;
+}
+```
+
+**Error Handling:**
+```c
+bool operation(void) {
+    if (error_condition) {
+        ESP_LOGE(TAG, "Operation failed: reason");
+        return false;
+    }
+    return true;
+}
+```
+
+**FreeRTOS Task:**
+```c
+void task_function(void *arg) {
+    while (1) {
+        // Task work
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+}
+```
+
+**PSRAM Allocation:**
+```c
+void *buffer = heap_caps_malloc(size, MALLOC_CAP_SPIRAM);
+if (buffer == NULL) {
+    ESP_LOGE(TAG, "PSRAM allocation failed");
+    return false;
+}
+// Use buffer...
+free(buffer);
+```
+
+---
+
+## Version History
+
+- **v1.0** (January 2025): Initial ruleset creation
+
+---
+
+**Note:** This ruleset is a living document. Update as the project evolves and new patterns emerge.
+

@@ -1,0 +1,383 @@
+# Testing Framework - Integration Testing Rules
+
+**Version:** 1.0  
+**Last Updated:** January 2025  
+**Status:** Active
+
+---
+
+## Overview
+
+The project uses a comprehensive integration testing framework built on ESP-IDF's testing infrastructure. This framework enables automated testing of hardware and software components with real hardware.
+
+## Testing Architecture
+
+### Framework Components
+
+1. **Target-Based Tests**: Unity tests running on ESP32-S3 hardware
+2. **Host-Based Automation**: pytest-embedded for test orchestration and validation
+3. **Test Apps**: Separate ESP-IDF applications for integration testing scenarios
+
+### Directory Structure
+
+```
+integration_tests/
+├── test_apps/              # ESP-IDF test applications
+│   ├── audio_integration/      # Audio hardware integration tests
+│   ├── display_integration/    # Display hardware integration tests
+│   ├── storage_integration/    # SD/USB storage integration tests
+│   ├── controls_integration/   # GPIO controls integration tests
+│   ├── dsp_integration/        # DSP pipeline integration tests
+│   └── e2e_workflows/          # End-to-end user workflow tests
+├── host_tests/             # Python pytest test scripts
+│   ├── test_audio_playback.py
+│   ├── test_display_rendering.py
+│   ├── test_storage_access.py
+│   ├── test_controls_input.py
+│   ├── test_dsp_pipeline.py
+│   ├── test_track_loading.py
+│   └── test_e2e_workflows.py
+├── fixtures/               # Test fixtures and helpers
+│   ├── test_audio_files/       # Test MP3 files
+│   ├── test_images/           # Test display patterns
+│   └── helpers/
+│       ├── hardware_helpers.c
+│       └── hardware_helpers.h
+├── results/                # Test execution results (JSON/HTML)
+├── run_integration_test.py # Main test runner script
+├── pytest.ini             # pytest configuration
+└── conftest.py            # pytest fixtures
+```
+
+## Test Categories
+
+### 1. Audio Integration Tests
+- **Location**: `integration_tests/test_apps/audio_integration/`
+- **Tests**: I2S initialization, audio output configuration, MP3 playback, waveform extraction
+- **Hardware Required**: I2S audio output, storage with test MP3 files
+
+### 2. Display Integration Tests
+- **Location**: `integration_tests/test_apps/display_integration/`
+- **Tests**: Display initialization, QSPI communication, rendering, touch controller
+- **Hardware Required**: NV3041A display, GT911 touch controller
+
+### 3. Storage Integration Tests
+- **Location**: `integration_tests/test_apps/storage_integration/`
+- **Tests**: SD card mounting, USB host detection, track scanning, ID3 parsing
+- **Hardware Required**: SD card or USB storage device
+
+### 4. Controls Integration Tests
+- **Location**: `integration_tests/test_apps/controls_integration/`
+- **Tests**: GPIO button configuration, jog wheel, pitch encoder
+- **Hardware Required**: GPIO controls (may be disabled in board_config.h)
+
+### 5. DSP Pipeline Integration Tests
+- **Location**: `integration_tests/test_apps/dsp_integration/`
+- **Tests**: 
+  - Fixed-point resampler (Q16.16) for variable-speed playback
+  - 3-band DJ EQ (low/mid/high isolator)
+  - Soft limiter (polynomial saturation)
+  - Thread-safe pitch control (atomic operations)
+  - Block processing (256-sample blocks)
+- **Hardware Required**: None (pure DSP tests, no hardware dependencies)
+
+### 6. End-to-End Workflow Tests
+- **Location**: `integration_tests/test_apps/e2e_workflows/`
+- **Tests**: Complete user workflows (track loading, playback, cue points, loops, pitch control)
+- **Hardware Required**: Full system (all components)
+
+## Running Tests
+
+### Using the Test Runner Script
+
+The `run_integration_test.py` script provides a complete workflow:
+
+```bash
+# Complete workflow (build + flash + test)
+python integration_tests/run_integration_test.py audio_integration
+
+# Run all test apps
+python integration_tests/run_integration_test.py all
+
+# Build only
+python integration_tests/run_integration_test.py audio_integration --build-only
+
+# Flash and monitor (no tests)
+python integration_tests/run_integration_test.py audio_integration --flash-only --monitor
+
+# Specify serial port
+python integration_tests/run_integration_test.py audio_integration --port /dev/cu.usbmodem2101
+```
+
+### Manual Test Execution
+
+#### Build and Flash Single Test App
+
+```bash
+cd integration_tests/test_apps/audio_integration
+idf.py build
+idf.py -p /dev/cu.usbmodem2101 flash monitor
+```
+
+#### Run pytest Tests
+
+```bash
+cd integration_tests
+pytest host_tests/test_audio_playback.py -v
+```
+
+## Test Development Guidelines
+
+### Creating New Test Apps
+
+1. **Create Directory Structure**:
+   ```
+   integration_tests/test_apps/new_test_app/
+   ├── CMakeLists.txt
+   └── main/
+       ├── CMakeLists.txt
+       └── main.c
+   ```
+
+2. **CMakeLists.txt Template**:
+   ```cmake
+   cmake_minimum_required(VERSION 3.16)
+   include($ENV{IDF_PATH}/tools/cmake/project.cmake)
+   project(new_test_app)
+   
+   set(CMAKE_C_STANDARD 11)
+   set(CMAKE_C_STANDARD_REQUIRED ON)
+   ```
+
+3. **main/CMakeLists.txt Template**:
+   ```cmake
+   idf_component_register(
+       SRCS "main.c"
+       INCLUDE_DIRS "."
+       REQUIRES unity nvs_flash
+   )
+   ```
+
+4. **main.c Template**:
+   ```c
+   #include "unity.h"
+   #include "esp_log.h"
+   #include "nvs_flash.h"
+   
+   void setUp(void) {
+       // Initialize NVS
+       nvs_flash_init();
+   }
+   
+   void tearDown(void) {
+       // Cleanup
+   }
+   
+   void test_example(void) {
+       TEST_ASSERT_TRUE(true);
+   }
+   
+   void app_main(void) {
+       UNITY_BEGIN();
+       RUN_TEST(test_example);
+       UNITY_END();
+   }
+   ```
+
+### Creating Host-Side pytest Tests
+
+1. **Create test file**: `integration_tests/host_tests/test_new_feature.py`
+
+2. **Template**:
+   ```python
+   import pytest
+   
+   def test_feature_initialization(dut):
+       """Test feature initialization"""
+       dut.expect("Feature initialized", timeout=10)
+   
+   def test_feature_operation(dut):
+       """Test feature operation"""
+       dut.expect("Feature operation complete", timeout=5)
+   ```
+
+3. **Use pytest fixtures** from `conftest.py`:
+   - `dut`: Device under test fixture
+   - `audio_test_file`: Path to test audio file
+   - `test_fixtures_dir`: Path to fixtures directory
+
+## Test Naming Conventions
+
+### Unity Test Functions
+- Use descriptive names: `test_audio_output_init()`, `test_display_rendering()`
+- Use `RUN_TEST()` macro with line numbers: `RUN_TEST(test_name, 203)`
+- Group related tests in same file
+
+### pytest Test Functions
+- Prefix with `test_`: `test_audio_initialization()`
+- Use descriptive docstrings
+- Group by test category in separate files
+
+### Test App Names
+- Use lowercase with underscores: `audio_integration`, `display_integration`
+- Be descriptive: `e2e_workflows` not `e2e`
+
+## Hardware Requirements
+
+### Required for All Tests
+- ESP32-S3 development board (JC4827W543)
+- USB cable for programming and serial communication
+
+### Optional Hardware
+- SD card with test MP3 files (for storage tests)
+- External DAC (for audio verification)
+- Test fixtures for button/encoder simulation
+
+## Test Results and Reporting
+
+### Result Storage
+- **Location**: `integration_tests/results/`
+- **Formats**: JSON (machine-readable), HTML (human-readable)
+- **Naming**: `test_results_YYYYMMDD_HHMMSS.{json,html}`
+
+### Reading Results
+
+```python
+import json
+from pathlib import Path
+
+results_dir = Path("integration_tests/results")
+latest_json = sorted(results_dir.glob("test_results_*.json"))[-1]
+
+with open(latest_json) as f:
+    data = json.load(f)
+    print(f"Total: {data['summary']['total']}")
+    print(f"Passed: {data['summary']['passed']}")
+    print(f"Failed: {data['summary']['failed']}")
+```
+
+## Integration with Development Workflow
+
+### Before Committing Code
+
+1. Run relevant integration tests:
+   ```bash
+   python integration_tests/run_integration_test.py audio_integration
+   ```
+
+2. Verify all tests pass
+
+3. Check test coverage for modified components
+
+### Continuous Integration
+
+The test framework is designed for CI/CD integration:
+
+```yaml
+# Example GitHub Actions
+- name: Run Integration Tests
+  run: |
+    source $HOME/esp/esp-idf/export.sh
+    python integration_tests/run_integration_test.py all
+```
+
+## Prerequisites
+
+### ESP-IDF Environment
+- ESP-IDF v5.5.2 or compatible
+- `IDF_PATH` environment variable set
+- Run: `. $HOME/esp/esp-idf/export.sh`
+
+### Python Dependencies
+```bash
+pip install -r integration_tests/requirements.txt
+```
+
+Required packages:
+- pytest>=7.0.0
+- pytest-embedded>=0.1.0
+- pytest-embedded-serial-esp>=0.1.0
+- pytest-json-report>=1.5.0
+- pytest-html>=3.2.0
+
+## Troubleshooting
+
+### Common Issues
+
+1. **"IDF_PATH not set"**
+   - Solution: Run ESP-IDF export script
+   - Command: `. $HOME/esp/esp-idf/export.sh`
+
+2. **"No serial port found"**
+   - Solution: Specify port manually with `--port`
+   - Check USB connection and permissions
+
+3. **"pytest not found"**
+   - Solution: Install dependencies
+   - Command: `pip install -r integration_tests/requirements.txt`
+
+4. **Build Failures**
+   - Check ESP-IDF version compatibility
+   - Verify all components are available
+   - Review CMakeLists.txt dependencies
+
+5. **Test Failures**
+   - Check serial output for device errors
+   - Verify hardware connections
+   - Review test logs in `results/` directory
+
+## Best Practices
+
+### Test Design
+- **Isolation**: Each test should be independent
+- **Cleanup**: Use `tearDown()` for cleanup
+- **Graceful Skipping**: Use `TEST_IGNORE_MESSAGE()` when hardware unavailable
+- **Clear Assertions**: Use descriptive assertion messages
+
+### Test Organization
+- **One test app per hardware component**
+- **Group related tests in same file**
+- **Use consistent naming conventions**
+- **Document test requirements in comments**
+
+### Performance
+- **Keep tests fast**: Target <5 minutes per test app
+- **Parallel execution**: Run independent test apps in parallel when possible
+- **Efficient assertions**: Don't over-test obvious cases
+
+### Maintenance
+- **Update tests when APIs change**
+- **Remove obsolete tests**
+- **Keep test data minimal**
+- **Document hardware requirements**
+
+## Test Coverage Goals
+
+### Current Coverage
+- ✅ Audio hardware integration
+- ✅ Display hardware integration
+- ✅ Storage integration
+- ✅ Controls integration
+- ✅ DSP pipeline integration (resampler, EQ, limiter, pitch control)
+- ✅ End-to-end workflows
+
+### Future Enhancements
+- [ ] Performance benchmarking tests
+- [ ] Stress testing (long-duration playback)
+- [ ] Multi-device synchronization tests
+- [ ] Automated test fixture for button/encoder simulation
+- [ ] Code coverage reporting
+
+## References
+
+- **Test Plan**: `integration_tests/TEST_PLAN.md`
+- **Usage Guide**: `integration_tests/README_USAGE.md`
+- **LLM Integration**: `integration_tests/LLM_USAGE.md`
+- **ESP-IDF Testing**: https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-guides/unit-tests.html
+- **pytest-embedded**: https://github.com/espressif/pytest-embedded
+
+---
+
+**Document Status:** Living document, updated as testing framework evolves  
+**Maintainer:** Development Team  
+**Last Review:** January 2025
