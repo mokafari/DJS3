@@ -595,12 +595,12 @@ void audio_player_get_waveform(uint8_t *buffer, size_t size) {
     if (!buffer || size == 0) return;
     
     // We want to return the waveform data CENTERED around the current playhead.
-    // rb_read_head points to current audio.
-    // Map rb_read_head (bytes) to waveform index.
+    // Use waveform_monotonic_index for stable positioning (doesn't wrap)
     
     xSemaphoreTake(buffer_mutex, portMAX_DELAY);
     
-    size_t current_wave_idx = rb_read_head / WAVEFORM_RATIO;
+    // Use monotonic index wrapped to buffer size for current position
+    size_t current_wave_idx = waveform_monotonic_index % WAVEFORM_BUFFER_SIZE;
     
     // We want to fill 'size' pixels (e.g. 480).
     // Playhead should be at center (size/2).
