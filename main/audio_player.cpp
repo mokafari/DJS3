@@ -565,7 +565,7 @@ static void playback_task(void *pvParameters) {
                          eof_flag, avail, DSP_BLOCK_SIZE, (avail < DSP_BLOCK_SIZE));
             }
             
-            if (eof_flag && avail < DSP_BLOCK_SIZE) {
+            if (eof_flag && avail <= DSP_BLOCK_SIZE) {
                 ESP_LOGI(TAG, "Track finished - buffer drained after EOF (remaining: %zu samples)", avail);
                 player_state = AUDIO_PLAYER_STATE_STOPPED;
                 
