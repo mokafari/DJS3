@@ -533,6 +533,7 @@ static void analyze_pass2(const char *filepath) {
     int frames_decoded = 0;
     int read_pos = 0;
     int bytes_left = 0;
+    bool analysis_complete = false;  // Track if we finished naturally
     
     // For energy-based BPM detection
     float prev_energy = 0;
@@ -541,9 +542,10 @@ static void analyze_pass2(const char *filepath) {
     uint32_t last_beat_ms = 0;
     
     while (!feof(f) && wave_index < WAVEFORM_POINTS && !suspend_requested) {
-        // Check if suspended
+        // Check if suspended or playback resumed
         if (suspend_requested || !can_run_pass2()) {
-            ESP_LOGI(TAG, "Pass 2 suspended");
+            ESP_LOGI(TAG, "Pass 2 interrupted (suspend=%d, can_run=%d)", 
+                     suspend_requested, can_run_pass2());
             break;
         }
         
@@ -641,8 +643,14 @@ static void analyze_pass2(const char *filepath) {
         }
     }
     
-    // Calculate BPM from beat detection
-    if (beat_count > 10 && last_beat_ms > first_beat_ms) {
+    // Check if we completed naturally (reached end of file or waveform)
+    // Only set complete if we weren't interrupted
+    if (!suspend_requested && can_run_pass2() && (feof(f) || wave_index >= WAVEFORM_POINTS - 1)) {
+        analysis_complete = true;
+    }
+    
+    // Calculate BPM from beat detection (only if we got enough data)
+    if (analysis_complete && beat_count > 10 && last_beat_ms > first_beat_ms) {
         float duration_sec = (last_beat_ms - first_beat_ms) / 1000.0f;
         float detected_bpm = (beat_count - 1) * 60.0f / duration_sec;
         
@@ -653,11 +661,14 @@ static void analyze_pass2(const char *filepath) {
         }
     }
     
-    ESP_LOGI(TAG, "Pass 2 complete: %d frames, BPM: %.1f", frames_decoded, meta.bpm);
-    
-    // Save updated metadata
-    if (!suspend_requested) {
+    // Save updated metadata ONLY if analysis completed fully
+    // Partial saves would corrupt the waveform and BPM data
+    if (analysis_complete) {
+        ESP_LOGI(TAG, "Pass 2 complete: %d frames, BPM: %.1f", frames_decoded, meta.bpm);
         metadata_save(filepath, &meta);
+    } else {
+        ESP_LOGW(TAG, "Pass 2 interrupted at %d%%, not saving partial data", 
+                 wave_index * 100 / WAVEFORM_POINTS);
     }
     
     // Cleanup

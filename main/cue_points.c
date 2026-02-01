@@ -12,6 +12,7 @@
 #include "metadata_format.h"
 #include "esp_log.h"
 #include <string.h>
+#include <sys/stat.h>
 
 static const char *TAG = "cue_points";
 
@@ -193,6 +194,9 @@ void cue_points_clear_all(void) {
 
 /**
  * @brief Save cue points to metadata file
+ * 
+ * If no metadata exists yet, creates a minimal .odk file with just
+ * the cue point data. The analyzer will fill in waveform/BPM later.
  */
 bool cue_points_save(void) {
     if (current_track_path[0] == '\0') {
@@ -200,12 +204,35 @@ bool cue_points_save(void) {
         return false;
     }
     
-    // Load existing metadata
     TrackMetadata_t meta;
-    if (!metadata_load(current_track_path, &meta)) {
-        ESP_LOGW(TAG, "No existing metadata for %s, cannot save cue points", 
-                 current_track_path);
-        return false;
+    bool metadata_existed = metadata_load(current_track_path, &meta);
+    
+    if (!metadata_existed) {
+        // Create new minimal metadata for this track
+        ESP_LOGI(TAG, "Creating new metadata for cue points: %s", current_track_path);
+        
+        memset(&meta, 0, sizeof(meta));
+        meta.magic = ODK_MAGIC;
+        meta.version = ODK_VERSION;
+        
+        // Get source file size for change detection
+        struct stat st;
+        if (stat(current_track_path, &st) == 0) {
+            meta.source_size = st.st_size;
+        }
+        
+        // Set defaults - analyzer will update these later
+        meta.bpm = 120.0f;  // Default BPM
+        meta.key_id = 255;  // Unknown key
+        meta.duration_ms = 0;  // Will be calculated by analyzer
+        meta.grid_offset = 0;
+        
+        // Initialize seek table with linear estimate (will be refined by Pass 1)
+        for (int i = 0; i < SEEK_POINTS; i++) {
+            meta.seek_table[i] = (meta.source_size * i) / SEEK_POINTS;
+        }
+        
+        // Waveform stays zeroed - will be filled by Pass 2
     }
     
     // Update hot cues
@@ -213,9 +240,10 @@ bool cue_points_save(void) {
         meta.hotcues[i] = cue_points[i];
     }
     
-    // Save back
+    // Save
     if (metadata_save(current_track_path, &meta)) {
-        ESP_LOGI(TAG, "Cue points saved to metadata");
+        ESP_LOGI(TAG, "Cue points saved to metadata%s", 
+                 metadata_existed ? "" : " (new file created)");
         return true;
     } else {
         ESP_LOGE(TAG, "Failed to save cue points");
