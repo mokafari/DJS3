@@ -11,6 +11,7 @@ integration_tests/
 │   ├── display_integration/
 │   ├── storage_integration/
 │   ├── controls_integration/
+│   ├── dsp_integration/
 │   └── e2e_workflows/
 ├── host_tests/             # Python pytest test scripts
 ├── fixtures/               # Test data and helpers
@@ -61,6 +62,7 @@ cd integration_tests
 - **Display Integration**: QSPI communication, rendering, touch input
 - **Storage Integration**: SD card, USB host, track scanning
 - **Controls Integration**: GPIO buttons, jog wheel, pitch encoder
+- **DSP Integration**: Resampler, 3-band EQ, soft limiter, pitch control
 - **End-to-End Workflows**: Complete user workflows
 
 ## Documentation

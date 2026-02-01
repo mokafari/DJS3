@@ -199,8 +199,8 @@ TEST_CASE("UI integration", "[e2e][integration]")
     
     // Initialize UI Manager (LVGL)
     // This aligns with "High-Contrast HUD UI" vision
-    bool ui_ok = ui_manager_init();
-    TEST_ASSERT_TRUE_MESSAGE(ui_ok, "UI Manager initialization failed");
+    int ui_result = ui_manager_init(SCREEN_WIDTH, SCREEN_HEIGHT);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, ui_result, "UI Manager initialization failed");
     
     // Test display dimensions (defined in board_config.h)
     TEST_ASSERT_EQUAL_INT_MESSAGE(480, SCREEN_WIDTH, "Display width should be 480");
