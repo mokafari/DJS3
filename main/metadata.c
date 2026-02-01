@@ -121,9 +121,13 @@ const char* metadata_get_base_dir(void) {
  * @brief Save metadata for a track
  */
 bool metadata_save(const char *mp3_path, const TrackMetadata_t *data) {
-    // Lazy init
+    // Lazy init and verify mutex exists
     if (!file_lock) {
         metadata_init();
+        if (!file_lock) {
+            ESP_LOGE(TAG, "Cannot save: mutex creation failed");
+            return false;
+        }
     }
     
     char odk_path[256];
@@ -169,9 +173,13 @@ bool metadata_save(const char *mp3_path, const TrackMetadata_t *data) {
  * @brief Load metadata for a track
  */
 bool metadata_load(const char *mp3_path, TrackMetadata_t *out_data) {
-    // Lazy init
+    // Lazy init and verify mutex exists
     if (!file_lock) {
         metadata_init();
+        if (!file_lock) {
+            ESP_LOGE(TAG, "Cannot load: mutex creation failed");
+            return false;
+        }
     }
 
     char odk_path[256];

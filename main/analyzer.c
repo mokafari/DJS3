@@ -304,7 +304,17 @@ static void analyze_pass1(const char *filepath) {
         audio_start = id3.tag_size;
     }
     
+    // Validate audio size to prevent division by zero
+    if (audio_start >= meta.source_size) {
+        ESP_LOGE(TAG, "Invalid file: ID3 tag (%u) >= file size (%u)", 
+                 audio_start, meta.source_size);
+        return;
+    }
     uint32_t audio_size = meta.source_size - audio_start;
+    if (audio_size == 0) {
+        ESP_LOGE(TAG, "Invalid file: no audio data");
+        return;
+    }
     
     // Open file
     FILE *f = fopen(filepath, "rb");
@@ -526,7 +536,25 @@ static void analyze_pass2(const char *filepath) {
     
     // Calculate audio size for progress tracking
     // We want 480 points across the entire track
+    // Validate to prevent division by zero
+    if (audio_start >= meta.source_size) {
+        ESP_LOGE(TAG, "Invalid metadata: audio_start (%u) >= source_size (%u)", 
+                 audio_start, meta.source_size);
+        free(read_buffer);
+        heap_caps_free(decode_buffer);
+        MP3FreeDecoder(decoder);
+        fclose(f);
+        return;
+    }
     uint32_t audio_size = meta.source_size - audio_start;
+    if (audio_size == 0) {
+        ESP_LOGE(TAG, "Invalid metadata: no audio data");
+        free(read_buffer);
+        heap_caps_free(decode_buffer);
+        MP3FreeDecoder(decoder);
+        fclose(f);
+        return;
+    }
     
     int wave_index = 0;
     uint32_t bytes_processed = 0;
