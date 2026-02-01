@@ -75,28 +75,63 @@ static void mkdir_p(char *path) {
 }
 
 /**
- * @brief Convert MP3 path to ODK path
+ * @brief Convert MP3 path to ODK path (safe version with bounds checking)
  * 
  * In:  /sdcard/Music/Song.mp3
  * Out: /sdcard/.opendeck/Music/Song.odk
+ * 
+ * @return true if path constructed successfully, false on truncation
  */
-void metadata_get_path(const char *mp3_path, char *out_path) {
+bool metadata_get_path(const char *mp3_path, char *out_path, size_t out_size) {
+    if (!mp3_path || !out_path || out_size < 10) {
+        ESP_LOGE(TAG, "Invalid parameters for path conversion");
+        return false;
+    }
+    
+    int written;
+    
     // Check if path starts with mount point
     if (strncmp(mp3_path, MOUNT_POINT, strlen(MOUNT_POINT)) == 0) {
         // Construct: /sdcard/.opendeck + /Music/Song.mp3
-        sprintf(out_path, "%s%s", HIDDEN_DIR, mp3_path + strlen(MOUNT_POINT));
+        written = snprintf(out_path, out_size, "%s%s", HIDDEN_DIR, mp3_path + strlen(MOUNT_POINT));
     } else {
         // Path doesn't start with mount point, prepend hidden dir
-        sprintf(out_path, "%s/%s", HIDDEN_DIR, mp3_path);
+        written = snprintf(out_path, out_size, "%s/%s", HIDDEN_DIR, mp3_path);
+    }
+    
+    // Check for truncation (need room for extension replacement)
+    if (written < 0 || (size_t)written >= out_size) {
+        ESP_LOGE(TAG, "Path too long: %s", mp3_path);
+        out_path[0] = '\0';
+        return false;
     }
 
-    // Replace extension with .odk
+    // Replace extension with .odk (safely)
     char *ext = strrchr(out_path, '.');
-    if (ext) {
+    char *slash = strrchr(out_path, '/');
+    
+    // Only replace if extension is after the last slash (it's a file extension, not a dot in path)
+    if (ext && (!slash || ext > slash)) {
+        // Check we have room for ".odk" (4 chars + null)
+        size_t base_len = ext - out_path;
+        if (base_len + 5 > out_size) {
+            ESP_LOGE(TAG, "Path too long for extension: %s", mp3_path);
+            out_path[0] = '\0';
+            return false;
+        }
         strcpy(ext, ".odk");
     } else {
+        // No extension - append .odk
+        size_t len = strlen(out_path);
+        if (len + 5 > out_size) {
+            ESP_LOGE(TAG, "Path too long for extension: %s", mp3_path);
+            out_path[0] = '\0';
+            return false;
+        }
         strcat(out_path, ".odk");
     }
+    
+    return true;
 }
 
 /**
@@ -104,7 +139,9 @@ void metadata_get_path(const char *mp3_path, char *out_path) {
  */
 bool metadata_exists(const char *mp3_path) {
     char odk_path[256];
-    metadata_get_path(mp3_path, odk_path);
+    if (!metadata_get_path(mp3_path, odk_path, sizeof(odk_path))) {
+        return false;
+    }
     
     struct stat st;
     return (stat(odk_path, &st) == 0);
@@ -131,7 +168,9 @@ bool metadata_save(const char *mp3_path, const TrackMetadata_t *data) {
     }
     
     char odk_path[256];
-    metadata_get_path(mp3_path, odk_path);
+    if (!metadata_get_path(mp3_path, odk_path, sizeof(odk_path))) {
+        return false;
+    }
     
     // 1. Acquire lock (500ms timeout)
     if (xSemaphoreTake(file_lock, pdMS_TO_TICKS(500)) != pdTRUE) {
@@ -183,7 +222,9 @@ bool metadata_load(const char *mp3_path, TrackMetadata_t *out_data) {
     }
 
     char odk_path[256];
-    metadata_get_path(mp3_path, odk_path);
+    if (!metadata_get_path(mp3_path, odk_path, sizeof(odk_path))) {
+        return false;
+    }
 
     // Acquire lock (100ms timeout for reads)
     if (xSemaphoreTake(file_lock, pdMS_TO_TICKS(100)) != pdTRUE) {

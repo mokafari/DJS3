@@ -259,7 +259,12 @@ static void pass1_task(void *pvParameters) {
     // Queue Pass 2
     if (!suspend_requested) {
         state = ANALYZER_STATE_PASS2_PENDING;
-        xQueueSend(pass2_queue, filepath, 0);
+        
+        // Copy to properly-sized buffer for queue (avoids buffer over-read)
+        char path_buffer[PATH_MAX_LEN];
+        strncpy(path_buffer, filepath, PATH_MAX_LEN - 1);
+        path_buffer[PATH_MAX_LEN - 1] = '\0';
+        xQueueSend(pass2_queue, path_buffer, 0);
         
         // If we can run immediately, start Pass 2
         if (can_run_pass2()) {
@@ -463,8 +468,11 @@ static void pass2_task(void *pvParameters) {
     // Wait until playback is stopped
     while (!can_run_pass2()) {
         if (suspend_requested) {
-            // Put back in queue for later
-            xQueueSend(pass2_queue, filepath, 0);
+            // Put back in queue for later (use properly-sized buffer)
+            char path_buffer[PATH_MAX_LEN];
+            strncpy(path_buffer, filepath, PATH_MAX_LEN - 1);
+            path_buffer[PATH_MAX_LEN - 1] = '\0';
+            xQueueSend(pass2_queue, path_buffer, 0);
             state = ANALYZER_STATE_PASS2_PENDING;
             free(filepath);
             pass2_task_handle = NULL;

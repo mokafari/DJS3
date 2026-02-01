@@ -29,10 +29,12 @@ void metadata_init(void);
  * 
  * Transforms: /sdcard/Music/Song.mp3 -> /sdcard/.opendeck/Music/Song.odk
  * 
- * @param mp3_path  Source MP3 file path
- * @param out_path  Output buffer for .odk path (must be at least 256 bytes)
+ * @param mp3_path   Source MP3 file path
+ * @param out_path   Output buffer for .odk path
+ * @param out_size   Size of output buffer (typically 256)
+ * @return true if path was constructed successfully, false on truncation
  */
-void metadata_get_path(const char *mp3_path, char *out_path);
+bool metadata_get_path(const char *mp3_path, char *out_path, size_t out_size);
 
 /**
  * @brief Check if metadata file exists for a track
