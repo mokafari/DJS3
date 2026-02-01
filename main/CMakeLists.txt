@@ -1,7 +1,7 @@
 idf_component_register(
-    SRCS "main.c" "audio_output.cpp" "usb_host.c" "sd_card.c" "storage.c" "audio_player.cpp" "controls.c" "pitch_control.c" "cue_points.c" "loop_control.c" "display.c" "waveform.c" "track_db.c" "id3_parser.c" "hw_test_harness.c"
+    SRCS "main.c" "audio_output.cpp" "usb_host.c" "sd_card.c" "storage.c" "audio_player.cpp" "controls.c" "pitch_control.c" "cue_points.c" "loop_control.c" "display.c" "waveform.c" "track_db.c" "id3_parser.c" "hw_test_harness.c" "dsp_engine.c"
     INCLUDE_DIRS "include"
-    REQUIRES driver nvs_flash esp_psram libhelix-mp3 fatfs usb ui timestretch esp_timer
+    REQUIRES driver nvs_flash esp_psram libhelix-mp3 fatfs usb ui timestretch esp_timer esp-dsp fx
 )
 
 # Set C standard

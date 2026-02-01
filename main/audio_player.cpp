@@ -1,6 +1,11 @@
 /**
  * @file audio_player.cpp
- * @brief Audio player with Lookahead Buffering (Dual Task)
+ * @brief Audio player with DSP Pipeline (Block Processing)
+ * 
+ * Features:
+ * - Fixed-point linear interpolation resampler for pitch control
+ * - 3-band EQ with polynomial soft limiter
+ * - Block-based processing (256 stereo frames) for cache efficiency
  */
 
 #include "audio_player.h"
@@ -19,6 +24,11 @@
 
 #include "mp3dec.h"
 #include "id3_parser.h"
+#include "esp_attr.h"   // For IRAM_ATTR
+#include "esp_dsp.h"    // For SIMD DSP operations
+#include "dsp_engine.h" // Fixed-point resampler
+#include "filter.h"     // 3-band EQ with soft limiter
+#include "pitch_control.h" // Atomic pitch access
 
 static const char *TAG = "audio_player";
 
@@ -41,7 +51,10 @@ static const char *TAG = "audio_player";
 #define WAVEFORM_BUFFER_SIZE (RING_BUFFER_SIZE / WAVEFORM_RATIO)
 
 // Decoder output chunk (1 MP3 frame is usually 1152 samples * 2 * 2 = 4608 bytes)
-#define DECODE_CHUNK_SIZE 4608 
+#define DECODE_CHUNK_SIZE 4608
+
+// ESP32-S3 cache works in 32-byte lines - alignment prevents double cache transactions
+#define S3_CACHE_ALIGN 32
 
 // ---------------------------------------------------------
 // State
@@ -92,6 +105,11 @@ static TaskHandle_t playback_task_handle = NULL;
 static QueueHandle_t command_queue = NULL;
 static SemaphoreHandle_t buffer_mutex = NULL;
 
+// DSP State
+static resampler_state_t resampler_state;
+static dj_eq_t main_eq;
+static size_t rb_read_head_index = 0;  // Track position in SAMPLES (not bytes)
+
 typedef enum {
     CMD_LOAD,
     CMD_PLAY,
@@ -130,12 +148,17 @@ static void internal_reset_buffer(void) {
     xSemaphoreTake(buffer_mutex, portMAX_DELAY);
     rb_write_head = 0;
     rb_read_head = 0;
+    rb_read_head_index = 0;  // Reset sample-based index for resampler
     rb_available = 0;
     total_bytes_played = 0;
     waveform_monotonic_index = 0;  // Reset monotonic counter for new track
     // Pre-fill waveform with silence (128 = center/zero, or 0 for amplitude mode)
     // We are using amplitude mode (0-255), so 0 is silence.
     memset(waveform_ring_buffer, 0, WAVEFORM_BUFFER_SIZE);
+    
+    // Reset DSP state to prevent transients
+    dsp_resampler_reset(&resampler_state);
+    dj_eq_reset(&main_eq);
     xSemaphoreGive(buffer_mutex);
 }
 
@@ -230,17 +253,39 @@ static bool internal_load(const char *filepath) {
 // Decoder Task (Producer)
 // ---------------------------------------------------------
 static void decoder_task(void *pvParameters) {
-    static int16_t decode_buf[2304]; // Max frame size
+    // Max MP3 frame size - must be 16-byte aligned for memcpy optimizations
+    static __attribute__((aligned(16))) int16_t decode_buf[2304];
+    static uint32_t decode_count = 0;
+    static uint32_t last_debug_time = 0;
+    
+    ESP_LOGI(TAG, "Decoder task started on core %d", xPortGetCoreID());
     
     while (1) {
         // Handle commands
         player_cmd_t cmd;
         if (xQueueReceive(command_queue, &cmd, 0) == pdTRUE) {
+            ESP_LOGI(TAG, "Decoder received command: %d", cmd.type);
             switch (cmd.type) {
-                case CMD_LOAD: internal_load(cmd.filepath); break;
-                case CMD_PLAY: player_state = AUDIO_PLAYER_STATE_PLAYING; break;
-                case CMD_PAUSE: player_state = AUDIO_PLAYER_STATE_PAUSED; break;
-                case CMD_STOP: internal_stop(); break;
+                case CMD_LOAD: 
+                    ESP_LOGI(TAG, "CMD_LOAD: %s", cmd.filepath);
+                    if (internal_load(cmd.filepath)) {
+                        ESP_LOGI(TAG, "Track loaded successfully");
+                    } else {
+                        ESP_LOGE(TAG, "Failed to load track!");
+                    }
+                    break;
+                case CMD_PLAY: 
+                    ESP_LOGI(TAG, "CMD_PLAY: Starting playback");
+                    player_state = AUDIO_PLAYER_STATE_PLAYING; 
+                    break;
+                case CMD_PAUSE: 
+                    ESP_LOGI(TAG, "CMD_PAUSE: Pausing playback");
+                    player_state = AUDIO_PLAYER_STATE_PAUSED; 
+                    break;
+                case CMD_STOP: 
+                    ESP_LOGI(TAG, "CMD_STOP: Stopping playback");
+                    internal_stop(); 
+                    break;
             }
         }
         
@@ -249,17 +294,27 @@ static void decoder_task(void *pvParameters) {
         bool buffer_full = false;
         
         xSemaphoreTake(buffer_mutex, portMAX_DELAY);
-        if (rb_available > RING_BUFFER_SIZE - DECODE_CHUNK_SIZE * 2) {
+        size_t current_available = rb_available;
+        if (current_available > RING_BUFFER_SIZE - DECODE_CHUNK_SIZE * 2) {
             buffer_full = true;
         }
         xSemaphoreGive(buffer_mutex);
+        
+        // Periodic debug output (every 5 seconds)
+        uint32_t now = xTaskGetTickCount() * portTICK_PERIOD_MS;
+        if (now - last_debug_time >= 5000) {
+            ESP_LOGI(TAG, "Decoder: frames=%lu | buffer=%.1f%% | file=%s",
+                     decode_count, 
+                     100.0f * current_available / RING_BUFFER_SIZE,
+                     mp3_file ? "open" : "closed");
+            last_debug_time = now;
+        }
         
         if (mp3_file && hMP3Decoder && !buffer_full) {
             int offset = MP3FindSyncWord(file_read_ptr, file_bytes_left);
             if (offset < 0) {
                 if (fill_file_buffer() == 0) {
-                    // EOF - Wait/Stop?
-                    // For now just yield, playback will eventually drain buffer
+                    // EOF reached
                     vTaskDelay(pdMS_TO_TICKS(100));
                     continue;
                 }
@@ -327,6 +382,7 @@ static void decoder_task(void *pvParameters) {
                     rb_write_head = (rb_write_head + pcm_bytes) % RING_BUFFER_SIZE;
                     rb_available += pcm_bytes;
                     if (rb_available > RING_BUFFER_SIZE) rb_available = RING_BUFFER_SIZE;
+                    decode_count++;
                     
                     xSemaphoreGive(buffer_mutex);
                     
@@ -351,61 +407,129 @@ static void decoder_task(void *pvParameters) {
 }
 
 // ---------------------------------------------------------
-// Playback Task (Consumer)
+// Optimized Volume Function (IRAM for cache-miss immunity)
+// Uses fixed-point Q15 math for efficient integer multiplication
+// Note: dsps_mulc_s16 crashes on ESP32-S3, so we use manual loop
+// ---------------------------------------------------------
+static void IRAM_ATTR apply_volume_dsp(int16_t* buffer, int samples, float gain) {
+    if (gain >= 1.0f) return; // No processing needed
+    
+    // Convert float gain (0.0 - 1.0) to Q15 fixed point (0 - 32767)
+    int32_t gain_q15 = (int32_t)(gain * 32768.0f);
+    
+    // Manual loop with Q15 fixed-point multiplication
+    // Compiler will optimize this for the ESP32-S3
+    for (int i = 0; i < samples; i++) {
+        int32_t sample = buffer[i];
+        buffer[i] = (int16_t)((sample * gain_q15) >> 15);
+    }
+}
+
+// ---------------------------------------------------------
+// Playback Task (Consumer) - Block Processing DSP Pipeline
 // ---------------------------------------------------------
 static void playback_task(void *pvParameters) {
-    static int16_t i2s_buf[1024];
+    // Fixed-size output block for consistent DSP processing
+    // 256 stereo frames * 2 channels = 512 samples
+    // MUST be 16-byte aligned for ESP-DSP SIMD operations
+    static __attribute__((aligned(16))) int16_t i2s_block[DSP_BLOCK_SIZE * 2];
+    static uint32_t blocks_played = 0;
+    static uint32_t underruns = 0;
+    static uint32_t last_debug_time = 0;
+    
+    // Ring buffer size in stereo frames (bytes / 4)
+    const size_t ring_size_samples = RING_BUFFER_SIZE / 4;
+    
+    ESP_LOGI(TAG, "Playback task started on core %d (block size: %d frames)", 
+             xPortGetCoreID(), DSP_BLOCK_SIZE);
+    
+    bool first_play = true;
     
     while (1) {
-        size_t bytes_to_read = 0;
-        
-        // Check if we can play
-        if (player_state == AUDIO_PLAYER_STATE_PLAYING) {
-            xSemaphoreTake(buffer_mutex, portMAX_DELAY);
-            if (rb_available >= sizeof(i2s_buf)) {
-                bytes_to_read = sizeof(i2s_buf);
-            } else {
-                bytes_to_read = rb_available;
-            }
-            
-            if (bytes_to_read > 0) {
-                // Read from ring buffer
-                size_t space_at_end = RING_BUFFER_SIZE - rb_read_head;
-                if (bytes_to_read <= space_at_end) {
-                    memcpy(i2s_buf, &pcm_ring_buffer[rb_read_head], bytes_to_read);
-                } else {
-                    memcpy(i2s_buf, &pcm_ring_buffer[rb_read_head], space_at_end);
-                    memcpy((uint8_t*)i2s_buf + space_at_end, &pcm_ring_buffer[0], bytes_to_read - space_at_end);
-                }
-                
-                rb_read_head = (rb_read_head + bytes_to_read) % RING_BUFFER_SIZE;
-                rb_available -= bytes_to_read;
-                total_bytes_played += bytes_to_read;
-                // Update monotonic waveform index (bytes / WAVEFORM_RATIO)
-                waveform_monotonic_index = total_bytes_played / WAVEFORM_RATIO;
-            }
-            xSemaphoreGive(buffer_mutex);
+        // Check if we should play
+        if (player_state != AUDIO_PLAYER_STATE_PLAYING) {
+            first_play = true;  // Reset for next play
+            vTaskDelay(pdMS_TO_TICKS(100));
+            continue;
         }
         
-        if (bytes_to_read > 0) {
-            // Apply gain
-            int samples = bytes_to_read / 2;
-            for (int i = 0; i < samples; i++) {
-                i2s_buf[i] = (int16_t)(i2s_buf[i] * current_gain);
+        // Debug: Log on first playback frame
+        if (first_play) {
+            ESP_LOGI(TAG, "Playback starting - pcm_ring_buffer=%p rb_read_head_index=%zu", 
+                     pcm_ring_buffer, rb_read_head_index);
+            first_play = false;
+        }
+        
+        // 1. Calculate playback speed from pitch control (atomic read)
+        float pitch_percent = pitch_control_get();
+        float speed_ratio = 1.0f + (pitch_percent / 100.0f);
+        
+        // Safety: prevent near-zero or negative speeds (would cause issues)
+        if (speed_ratio < 0.1f) speed_ratio = 0.1f;
+        if (speed_ratio > 2.0f) speed_ratio = 2.0f;
+        
+        // 2. Check buffer availability
+        // Need ~1.5x source samples for safety margin at variable speeds
+        size_t source_needed = (size_t)(DSP_BLOCK_SIZE * speed_ratio * 1.5f);
+        
+        xSemaphoreTake(buffer_mutex, portMAX_DELAY);
+        size_t available_samples = rb_available / 4;  // Bytes to stereo frames
+        
+        if (available_samples >= source_needed) {
+            // Safety check - verify buffer is valid
+            if (!pcm_ring_buffer) {
+                ESP_LOGE(TAG, "FATAL: pcm_ring_buffer is NULL!");
+                xSemaphoreGive(buffer_mutex);
+                vTaskDelay(pdMS_TO_TICKS(1000));
+                continue;
             }
             
-            // Blocking write to I2S
-            audio_output_write(i2s_buf, samples);
+            // 3. Resample: Read from ring buffer at variable speed
+            // This is the core pitch/tempo control engine
+            size_t consumed = dsp_resample_linear(
+                &resampler_state,
+                (const int16_t*)pcm_ring_buffer,
+                ring_size_samples,
+                &rb_read_head_index,
+                i2s_block,          // Output buffer
+                DSP_BLOCK_SIZE,     // Requested output frames
+                speed_ratio
+            );
+            
+            // 4. Update buffer tracking
+            size_t bytes_consumed = consumed * 4;  // Stereo frames to bytes
+            rb_available -= bytes_consumed;
+            rb_read_head = rb_read_head_index * 4;  // Sync byte-based head for waveform
+            total_bytes_played += bytes_consumed;
+            waveform_monotonic_index = total_bytes_played / WAVEFORM_RATIO;
+            
+            xSemaphoreGive(buffer_mutex);
+            
+            // 5. Apply 3-Band EQ with Soft Limiter
+            dj_eq_process(&main_eq, i2s_block, DSP_BLOCK_SIZE);
+            
+            // 6. Apply Volume using SIMD-optimized DSP function
+            // RE-ENABLED: Testing SIMD volume
+            apply_volume_dsp(i2s_block, DSP_BLOCK_SIZE * 2, current_gain);
+            
+            // 7. Output to I2S (blocking write)
+            audio_output_write(i2s_block, DSP_BLOCK_SIZE * 2);
+            
+            blocks_played++;
             
         } else {
-            // No data or paused
-            if (player_state == AUDIO_PLAYER_STATE_PLAYING) {
-                // Buffer underrun
-                vTaskDelay(pdMS_TO_TICKS(10));
-            } else {
-                // Paused
-                vTaskDelay(pdMS_TO_TICKS(100));
-            }
+            xSemaphoreGive(buffer_mutex);
+            underruns++;
+            // Buffer underrun - wait for decoder to catch up
+            vTaskDelay(pdMS_TO_TICKS(5));
+        }
+        
+        // Periodic debug output
+        uint32_t now = xTaskGetTickCount() * portTICK_PERIOD_MS;
+        if (now - last_debug_time >= 5000) {
+            ESP_LOGI(TAG, "Playback: blocks=%lu | underruns=%lu | played=%llu bytes | speed=%.2fx",
+                     blocks_played, underruns, total_bytes_played, speed_ratio);
+            last_debug_time = now;
         }
     }
 }
@@ -415,15 +539,39 @@ static void playback_task(void *pvParameters) {
 // ---------------------------------------------------------
 
 bool audio_player_init(void) {
-    ESP_LOGI(TAG, "Initializing Audio Player (Buffered)...");
+    ESP_LOGI(TAG, "Initializing Audio Player (DSP Pipeline)...");
     
-    // Allocate buffers in PSRAM
-    file_read_buffer = (uint8_t*)heap_caps_malloc(4096, MALLOC_CAP_SPIRAM);
-    pcm_ring_buffer = (uint8_t*)heap_caps_malloc(RING_BUFFER_SIZE, MALLOC_CAP_SPIRAM);
-    waveform_ring_buffer = (uint8_t*)heap_caps_malloc(WAVEFORM_BUFFER_SIZE, MALLOC_CAP_SPIRAM);
+    // Initialize DSP library for SIMD operations
+    esp_err_t dsp_ret = dsps_fft2r_init_fc32(NULL, CONFIG_DSP_MAX_FFT_SIZE);
+    if (dsp_ret == ESP_OK) {
+        ESP_LOGI(TAG, "DSP library initialized for SIMD operations");
+    } else {
+        ESP_LOGW(TAG, "DSP init returned %d (non-critical, SIMD may still work)", dsp_ret);
+    }
+    
+    // Initialize DSP components
+    dsp_resampler_init(&resampler_state);
+    dj_eq_init(&main_eq, 44100);
+    
+    // Allocate buffers in PSRAM with cache-line alignment for ESP32-S3
+    ESP_LOGI(TAG, "Allocating audio buffers in PSRAM...");
+    
+    file_read_buffer = (uint8_t*)heap_caps_aligned_alloc(
+        S3_CACHE_ALIGN, 4096, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    ESP_LOGI(TAG, "  file_read_buffer: %p (4KB)", file_read_buffer);
+    
+    pcm_ring_buffer = (uint8_t*)heap_caps_aligned_alloc(
+        S3_CACHE_ALIGN, RING_BUFFER_SIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    ESP_LOGI(TAG, "  pcm_ring_buffer: %p (%d MB)", pcm_ring_buffer, RING_BUFFER_SIZE / (1024*1024));
+    
+    waveform_ring_buffer = (uint8_t*)heap_caps_aligned_alloc(
+        S3_CACHE_ALIGN, WAVEFORM_BUFFER_SIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    ESP_LOGI(TAG, "  waveform_ring_buffer: %p (%d KB)", waveform_ring_buffer, WAVEFORM_BUFFER_SIZE / 1024);
     
     if (!file_read_buffer || !pcm_ring_buffer || !waveform_ring_buffer) {
         ESP_LOGE(TAG, "Failed to allocate audio buffers!");
+        ESP_LOGE(TAG, "  file_read: %p, pcm_ring: %p, waveform: %p", 
+                 file_read_buffer, pcm_ring_buffer, waveform_ring_buffer);
         return false;
     }
     
@@ -435,9 +583,11 @@ bool audio_player_init(void) {
     if (!audio_output_init()) return false;
     
     // Create Tasks
+    // Increased playback stack for DSP processing
     xTaskCreatePinnedToCore(decoder_task, "decoder_task", 12288, NULL, 5, &decoder_task_handle, 1);
-    xTaskCreatePinnedToCore(playback_task, "playback_task", 4096, NULL, 6, &playback_task_handle, 1);
+    xTaskCreatePinnedToCore(playback_task, "playback_task", 8192, NULL, 6, &playback_task_handle, 1);
     
+    ESP_LOGI(TAG, "DSP Pipeline ready: Resampler + 3-Band EQ + Soft Limiter");
     return true;
 }
 

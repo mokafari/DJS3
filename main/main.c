@@ -529,10 +529,27 @@ void app_main(void)
     // Main loop
     uint32_t last_update = 0;
     uint32_t loop_count = 0;
+    audio_player_state_t last_state = AUDIO_PLAYER_STATE_STOPPED;
+    
     while (1) {
         loop_count++;
+        
+        // Debug: Log audio player state changes and periodic status
+        audio_player_state_t current_state = audio_player_get_state();
+        if (current_state != last_state) {
+            const char* state_names[] = {"STOPPED", "PLAYING", "PAUSED", "LOADING"};
+            ESP_LOGI(TAG, "Audio player state changed: %s -> %s", 
+                     state_names[last_state], state_names[current_state]);
+            last_state = current_state;
+        }
+        
         if (loop_count % 100 == 0) {
-            ESP_LOGI(TAG, "Main loop running... (iteration %lu)", loop_count);
+            const char* state_names[] = {"STOPPED", "PLAYING", "PAUSED", "LOADING"};
+            uint32_t pos = audio_player_get_position();
+            uint32_t dur = audio_player_get_duration();
+            float pitch = pitch_control_get();
+            ESP_LOGI(TAG, "Main loop #%lu | Audio: %s | Pos: %lus/%lus | Pitch: %.1f%%", 
+                     loop_count, state_names[current_state], pos, dur, pitch);
         }
         
         uint32_t now = xTaskGetTickCount() * portTICK_PERIOD_MS;
@@ -552,8 +569,8 @@ void app_main(void)
             ui_manager_process();
         }
         
-        // Update UI with current state (every 50ms for smooth updates)
-        if (now - last_update >= 50) {
+        // Update UI with current state (every 16ms = ~60 FPS target)
+        if (now - last_update >= 16) {
             // Only update UI if display is initialized
             if (display_is_initialized()) {
                 if (audio_player_get_state() == AUDIO_PLAYER_STATE_PLAYING) {

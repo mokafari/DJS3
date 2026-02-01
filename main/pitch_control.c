@@ -1,23 +1,30 @@
 /**
  * @file pitch_control.c
- * @brief Pitch/tempo control implementation
+ * @brief Pitch/tempo control implementation with thread-safe atomic access
  * 
- * Note: Actual audio resampling requires integration with audio processor
+ * Provides pitch adjustment for real-time audio resampling.
+ * Uses atomic operations to ensure thread safety between UI and audio tasks.
  */
 
 #include "pitch_control.h"
 #include "controls.h"
 #include "esp_log.h"
+#include <stdatomic.h>
 
 static const char *TAG = "pitch_control";
-static float current_pitch = 0.0f;
+
+// Atomic float storage for thread-safe access from audio task
+// Uses atomic_int for storage since C11 doesn't guarantee atomic_float
+static atomic_int current_pitch_int = ATOMIC_VAR_INIT(0);
+
 static const float PITCH_MIN = -50.0f;
 static const float PITCH_MAX = 50.0f;
 static const float PITCH_STEP = 0.1f; // Per encoder click
+static const float PITCH_SCALE = 1000.0f; // Convert float to int (3 decimal places)
 
 bool pitch_control_init(void) {
-    ESP_LOGI(TAG, "Initializing pitch control");
-    current_pitch = 0.0f;
+    ESP_LOGI(TAG, "Initializing pitch control (atomic)");
+    atomic_store(&current_pitch_int, 0);
     return true;
 }
 
@@ -27,17 +34,21 @@ bool pitch_control_set(float pitch_percent) {
         return false;
     }
     
-    current_pitch = pitch_percent;
-    ESP_LOGI(TAG, "Pitch set to %.2f%%", current_pitch);
+    // Convert float to scaled int for atomic storage
+    int scaled = (int)(pitch_percent * PITCH_SCALE);
+    atomic_store(&current_pitch_int, scaled);
+    ESP_LOGI(TAG, "Pitch set to %.2f%%", pitch_percent);
     return true;
 }
 
 float pitch_control_get(void) {
-    return current_pitch;
+    // Atomic load - safe to call from audio ISR/task
+    int scaled = atomic_load(&current_pitch_int);
+    return (float)scaled / PITCH_SCALE;
 }
 
 void pitch_control_reset(void) {
-    current_pitch = 0.0f;
+    atomic_store(&current_pitch_int, 0);
     ESP_LOGI(TAG, "Pitch reset to 0%%");
 }
 
@@ -45,7 +56,8 @@ void pitch_control_reset(void) {
 void pitch_control_update(void) {
     int8_t delta = controls_get_pitch_delta();
     if (delta != 0) {
-        float new_pitch = current_pitch + (delta * PITCH_STEP);
+        float current = pitch_control_get();
+        float new_pitch = current + (delta * PITCH_STEP);
         if (new_pitch >= PITCH_MIN && new_pitch <= PITCH_MAX) {
             pitch_control_set(new_pitch);
         }

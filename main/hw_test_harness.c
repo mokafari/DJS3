@@ -339,7 +339,7 @@ static int test_waveform_fps(void) {
     
     while (esp_timer_get_time() - start < 2000000) { // 2 seconds
         size_t wave_index = audio_player_get_waveform_index();
-        ui_manager_update_waveform(waveform, 480, 0.5f, wave_index);
+        ui_manager_update_waveform(waveform, 480, 0.5f, 0.0f, wave_index);
         ui_manager_process();
         frames++;
         vTaskDelay(pdMS_TO_TICKS(10)); // ~100 FPS target
