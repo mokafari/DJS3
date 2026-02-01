@@ -14,6 +14,7 @@
 #include <math.h>
 #include <stdlib.h>
 #include "esp_log.h"
+#include "esp_attr.h"  // For IRAM_ATTR
 
 static const char *TAG = "granular";
 
@@ -21,32 +22,32 @@ static const char *TAG = "granular";
 #define M_PI 3.14159265358979323846
 #endif
 
-// Helper: Linear interpolation
-static float lerp(float a, float b, float t) {
+// Helper: Linear interpolation (IRAM for cache-miss immunity)
+static inline float IRAM_ATTR lerp(float a, float b, float t) {
     return a + (b - a) * t;
 }
 
-// Helper: Wrap position to buffer bounds
-static float wrap_position(float pos, float max) {
+// Helper: Wrap position to buffer bounds (IRAM for cache-miss immunity)
+static inline float IRAM_ATTR wrap_position(float pos, float max) {
     while (pos < 0) pos += max;
     while (pos >= max) pos -= max;
     return pos;
 }
 
 // Helper: Random float between 0 and 1
-static float random_float(void) {
+static inline float IRAM_ATTR random_float(void) {
     return (float)rand() / (float)RAND_MAX;
 }
 
 // Helper: Random float between -1 and 1
-static float random_float_signed(void) {
+static inline float IRAM_ATTR random_float_signed(void) {
     return (random_float() * 2.0f) - 1.0f;
 }
 
 /**
- * @brief Calculate window function value
+ * @brief Calculate window function value (IRAM for cache-miss immunity)
  */
-float granular_window_value(granular_window_t window, float position) {
+float IRAM_ATTR granular_window_value(granular_window_t window, float position) {
     // Clamp position to [0, 1]
     if (position < 0.0f) position = 0.0f;
     if (position > 1.0f) position = 1.0f;

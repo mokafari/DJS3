@@ -7,6 +7,7 @@
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
+#include "esp_attr.h"  // For IRAM_ATTR
 #include <string.h>
 #include <math.h>
 #include <stdlib.h>
@@ -15,13 +16,13 @@
 #define M_PI 3.14159265358979323846
 #endif
 
-// Helper: Linear interpolation
-static float lerp(float a, float b, float t) {
+// Helper: Linear interpolation (IRAM for cache-miss immunity)
+static inline float IRAM_ATTR lerp(float a, float b, float t) {
     return a + (b - a) * t;
 }
 
-// Helper: Random float between 0 and 1
-static float random_float(void) {
+// Helper: Random float between 0 and 1 (IRAM for cache-miss immunity)
+static inline float IRAM_ATTR random_float(void) {
     return (float)rand() / (float)RAND_MAX;
 }
 
@@ -37,13 +38,15 @@ int slip_loop_init(slip_loop_t *slip, size_t buffer_size_samples, uint32_t sampl
 
     memset(slip, 0, sizeof(slip_loop_t));
     
-    // Allocate circular buffer in PSRAM if available
+    // Allocate circular buffer in PSRAM with cache-line alignment for ESP32-S3
     size_t buffer_bytes = buffer_size_samples * sizeof(int16_t) * 2; // Stereo
-    slip->circular_buffer = (int16_t *)heap_caps_malloc(buffer_bytes, MALLOC_CAP_SPIRAM);
+    slip->circular_buffer = (int16_t *)heap_caps_aligned_alloc(
+        32, buffer_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     
     if (!slip->circular_buffer) {
-        // Fallback to internal RAM
-        slip->circular_buffer = (int16_t *)malloc(buffer_bytes);
+        // Fallback to internal RAM (aligned)
+        slip->circular_buffer = (int16_t *)heap_caps_aligned_alloc(
+            32, buffer_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
         if (!slip->circular_buffer) {
             ESP_LOGE(TAG, "Failed to allocate slip loop buffer");
             return -1;
@@ -218,7 +221,7 @@ bool slip_loop_is_active(const slip_loop_t *slip) {
     return slip->is_active;
 }
 
-void slip_loop_process(slip_loop_t *slip,
+void IRAM_ATTR slip_loop_process(slip_loop_t *slip,
                       const int16_t *main_buffer,
                       size_t main_buffer_size,
                       int16_t *output,
