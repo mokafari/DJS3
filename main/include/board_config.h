@@ -103,6 +103,12 @@ extern "C" {
 #define PITCH_ENCODER_A_PIN       (-1)
 #define PITCH_ENCODER_B_PIN       (-1)
 
+/* Pitch Fader ADC (analog slider) */
+/* Define the ADC channel for the pitch fader. Set to -1 to disable. */
+/* ESP32-S3 ADC1 channels: GPIO1-10 (channels 0-9) */
+#define PITCH_FADER_ADC_CHANNEL   (-1)  // Disabled by default
+#define PITCH_FADER_ADC_GPIO      (-1)  // Corresponding GPIO (for reference)
+
 /* ============================================================================
  * Other Peripherals
  * ============================================================================ */

@@ -7,7 +7,8 @@ idf_component_register(
         "storage.c" 
         "audio_player.cpp" 
         "controls.c" 
-        "pitch_control.c" 
+        "pitch_control.c"
+        "pitch_fader.c" 
         "cue_points.c" 
         "loop_control.c" 
         "display.c" 
@@ -22,8 +23,10 @@ idf_component_register(
         "library_db.c"
         "playlist_manager.c"
         "analysis_task.c"
+        "track_history.c"
+        "preferences.c"
     INCLUDE_DIRS "include"
-    REQUIRES driver nvs_flash esp_psram libhelix-mp3 fatfs usb ui timestretch esp_timer esp-dsp fx sync analysis playlist
+    REQUIRES driver nvs_flash esp_psram libhelix-mp3 fatfs usb ui timestretch esp_timer esp-dsp fx sync analysis playlist esp_adc
 )
 
 # Set C standard

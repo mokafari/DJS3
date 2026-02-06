@@ -27,7 +27,8 @@
 #include "esp_attr.h"   // For IRAM_ATTR
 #include "esp_dsp.h"    // For SIMD DSP operations
 #include "dsp_engine.h" // Fixed-point resampler
-#include "filter.h"     // 3-band EQ with soft limiter
+#include "filter.h"     // Resonant filter
+#include "eq.h"         // 3-band EQ with kill switches
 #include "pitch_control.h" // Atomic pitch access
 
 // OpenDeck Metadata System
@@ -120,7 +121,7 @@ static SemaphoreHandle_t buffer_mutex = NULL;
 
 // DSP State
 static resampler_state_t resampler_state;
-static dj_eq_t main_eq;
+static eq_3band_t main_eq;
 static size_t rb_read_head_index = 0;  // Track position in SAMPLES (not bytes)
 
 typedef enum {
@@ -172,7 +173,7 @@ static void internal_reset_buffer(void) {
     
     // Reset DSP state to prevent transients
     dsp_resampler_reset(&resampler_state);
-    dj_eq_reset(&main_eq);
+    eq_3band_reset(&main_eq);
     xSemaphoreGive(buffer_mutex);
 }
 
@@ -582,7 +583,7 @@ static void playback_task(void *pvParameters) {
             xSemaphoreGive(buffer_mutex);
             
             // 5. Apply 3-Band EQ with Soft Limiter
-            dj_eq_process(&main_eq, i2s_block, DSP_BLOCK_SIZE);
+            eq_3band_process(&main_eq, i2s_block, DSP_BLOCK_SIZE);
             
             // 6. Apply Volume using SIMD-optimized DSP function
             // RE-ENABLED: Testing SIMD volume
@@ -654,7 +655,7 @@ bool audio_player_init(void) {
     
     // Initialize DSP components
     dsp_resampler_init(&resampler_state);
-    dj_eq_init(&main_eq, 44100);
+    eq_3band_init(&main_eq, 44100);
     
     // Allocate buffers in PSRAM with cache-line alignment for ESP32-S3
     ESP_LOGI(TAG, "Allocating audio buffers in PSRAM...");

@@ -9,6 +9,7 @@
 #include "telemetry_view.h"
 #include "crate_view.h"
 #include "metadata_view.h"
+#include "settings_view.h"
 #include "lvgl_driver.h"
 #include "esp_log.h"
 #include "track_db.h"
@@ -64,6 +65,10 @@ int ui_manager_init(uint32_t width, uint32_t height) {
     ESP_LOGI(TAG, "Initializing metadata view...");
     metadata_view_init(width, height);
     ESP_LOGI(TAG, "Metadata view initialized");
+    
+    ESP_LOGI(TAG, "Initializing settings view...");
+    settings_view_init(width, height);
+    ESP_LOGI(TAG, "Settings view initialized");
     
     // Populate crate view with tracks from DB
     // Note: crate_view_set_tracks now copies the strings internally, so we can free them
@@ -167,6 +172,7 @@ void ui_manager_set_view(ui_view_type_t view) {
     // Hide all views
     waveform_view_hide();
     crate_view_hide();
+    settings_view_hide();
     
     // Show selected view
     switch (view) {
@@ -177,8 +183,7 @@ void ui_manager_set_view(ui_view_type_t view) {
             crate_view_show();
             break;
         case UI_VIEW_SETTINGS:
-            // TODO: Show settings view
-            ESP_LOGW(TAG, "Settings view not yet implemented");
+            settings_view_show();
             break;
     }
     
