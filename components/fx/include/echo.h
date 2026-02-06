@@ -1,196 +1,98 @@
 /**
  * @file echo.h
- * @brief Tempo-synced echo/delay effect with feedback
- * 
- * Provides a DJ-style echo effect with:
- * - Tempo-synchronized delay times (1/4, 1/2, 3/4, 1 beat)
- * - Adjustable feedback for repeating echoes
- * - Wet/dry mix control
- * - Circular buffer delay line for efficient memory usage
+ * @brief Tempo-synced echo/delay effect for DJS3
+ *
+ * Provides a stereo delay effect with tempo-synchronized delay times,
+ * feedback control, and wet/dry mixing.
  */
 
-#ifndef ECHO_H
-#define ECHO_H
+#ifndef FX_ECHO_H
+#define FX_ECHO_H
 
 #include <stdint.h>
 #include <stddef.h>
-#include <stdbool.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 /**
- * @brief Maximum delay time in milliseconds (2 seconds)
+ * @brief Maximum delay buffer size in stereo samples
  * 
- * Supports tempos as low as 60 BPM with 1 beat delay (1000ms)
- * or 30 BPM with 1 beat delay (2000ms)
+ * Sized for 1 beat at 60 BPM @ 48kHz stereo = 48000 * 2 = 96000 samples
+ * Adding headroom for slower tempos
  */
-#define ECHO_MAX_DELAY_MS       2000
+#define ECHO_MAX_DELAY_SAMPLES (96000 * 2)
 
 /**
- * @brief Default sample rate
- */
-#define ECHO_DEFAULT_SAMPLE_RATE 44100
-
-/**
- * @brief Tempo-synced delay time divisions
- */
-typedef enum {
-    ECHO_SYNC_1_4 = 0,   /**< 1/4 beat (quarter note) */
-    ECHO_SYNC_1_2,       /**< 1/2 beat (half note) */
-    ECHO_SYNC_3_4,       /**< 3/4 beat (dotted half) */
-    ECHO_SYNC_1_1,       /**< 1 beat (whole note) */
-    ECHO_SYNC_COUNT      /**< Number of sync options */
-} echo_sync_t;
-
-/**
- * @brief Echo effect state
- * 
- * Contains circular buffer and parameters for stereo echo processing.
+ * @brief Echo effect state structure
  */
 typedef struct {
-    // Circular buffer for delay line (stereo interleaved)
-    int16_t *buffer_l;           /**< Left channel delay buffer */
-    int16_t *buffer_r;           /**< Right channel delay buffer */
-    size_t buffer_size;          /**< Buffer size in samples */
-    size_t write_pos;            /**< Current write position */
+    float sample_rate;          /**< Audio sample rate in Hz */
+    float bpm;                  /**< Current tempo in beats per minute */
+    float delay_ratio;          /**< Delay time as fraction of beat (0.25, 0.5, 0.75, 1.0) */
+    float feedback;             /**< Feedback amount (0.0 - 0.95) */
+    float mix;                  /**< Wet/dry mix (0.0 = dry, 1.0 = wet) */
     
-    // Delay parameters
-    size_t delay_samples;        /**< Current delay time in samples */
-    float feedback;              /**< Feedback amount (0.0 to 0.95) */
-    float mix;                   /**< Wet/dry mix (0.0 = dry, 1.0 = wet) */
+    size_t delay_samples;       /**< Current delay in stereo sample pairs */
+    size_t write_pos;           /**< Write position in circular buffer */
     
-    // Tempo sync
-    float bpm;                   /**< Current tempo in BPM */
-    echo_sync_t sync_mode;       /**< Beat division for sync */
-    
-    uint32_t sample_rate;        /**< Audio sample rate */
-    bool enabled;                /**< Effect enable/bypass */
+    int16_t buffer[ECHO_MAX_DELAY_SAMPLES];  /**< Circular delay buffer (stereo interleaved) */
 } echo_t;
 
 /**
  * @brief Initialize echo effect
  * 
- * Allocates delay buffer and sets default parameters.
- * 
- * @param echo Pointer to echo state structure
- * @param sample_rate Audio sample rate (e.g., 44100)
- * @return true on success, false if buffer allocation fails
- * 
- * @note Call echo_deinit() to free allocated memory.
+ * @param e Pointer to echo state structure
+ * @param sample_rate Audio sample rate in Hz
  */
-bool echo_init(echo_t *echo, uint32_t sample_rate);
+void echo_init(echo_t *e, float sample_rate);
 
 /**
- * @brief Deinitialize echo effect
+ * @brief Set tempo for delay time calculation
  * 
- * Frees delay buffer memory.
- * 
- * @param echo Pointer to echo state structure
+ * @param e Pointer to echo state structure
+ * @param bpm Tempo in beats per minute (30.0 - 300.0)
  */
-void echo_deinit(echo_t *echo);
+void echo_set_bpm(echo_t *e, float bpm);
 
 /**
- * @brief Set echo tempo (BPM)
+ * @brief Set delay time as fraction of beat
  * 
- * Updates delay time based on current sync mode and new tempo.
- * 
- * @param echo Pointer to echo state
- * @param bpm Tempo in beats per minute (30.0 to 300.0)
+ * @param e Pointer to echo state structure
+ * @param ratio Delay ratio (0.25 = 1/4 beat, 0.5 = 1/2 beat, 0.75 = 3/4 beat, 1.0 = 1 beat)
  */
-void echo_set_bpm(echo_t *echo, float bpm);
-
-/**
- * @brief Set tempo sync mode
- * 
- * Changes the beat division used for delay time calculation.
- * 
- * @param echo Pointer to echo state
- * @param sync Beat division (1/4, 1/2, 3/4, or 1 beat)
- */
-void echo_set_sync(echo_t *echo, echo_sync_t sync);
+void echo_set_delay_ratio(echo_t *e, float ratio);
 
 /**
  * @brief Set feedback amount
  * 
- * Controls how much of the delayed signal is fed back into the delay line.
- * Higher values create longer-lasting echoes.
- * 
- * @param echo Pointer to echo state
- * @param feedback Feedback amount (0.0 to 0.95, clamped for stability)
+ * @param e Pointer to echo state structure
+ * @param feedback Feedback level (0.0 - 0.95, clamped to prevent runaway)
  */
-void echo_set_feedback(echo_t *echo, float feedback);
+void echo_set_feedback(echo_t *e, float feedback);
 
 /**
  * @brief Set wet/dry mix
  * 
- * @param echo Pointer to echo state
- * @param mix Mix amount (0.0 = fully dry, 1.0 = fully wet)
+ * @param e Pointer to echo state structure
+ * @param wet_dry Mix level (0.0 = fully dry, 1.0 = fully wet)
  */
-void echo_set_mix(echo_t *echo, float mix);
-
-/**
- * @brief Enable or disable echo processing
- * 
- * @param echo Pointer to echo state
- * @param enabled True to enable, false to bypass
- */
-void echo_set_enabled(echo_t *echo, bool enabled);
-
-/**
- * @brief Set manual delay time (bypasses tempo sync)
- * 
- * @param echo Pointer to echo state
- * @param delay_ms Delay time in milliseconds (clamped to ECHO_MAX_DELAY_MS)
- */
-void echo_set_delay_ms(echo_t *echo, float delay_ms);
-
-/**
- * @brief Get current delay time in milliseconds
- * 
- * @param echo Pointer to echo state
- * @return Current delay time in ms
- */
-float echo_get_delay_ms(const echo_t *echo);
-
-/**
- * @brief Calculate delay time from BPM and sync mode
- * 
- * Utility function to compute delay time.
- * Formula: delay_ms = (60000 / bpm) * beat_fraction
- * 
- * @param bpm Tempo in beats per minute
- * @param sync Beat division
- * @return Delay time in milliseconds
- */
-float echo_calc_delay_ms(float bpm, echo_sync_t sync);
+void echo_set_mix(echo_t *e, float wet_dry);
 
 /**
  * @brief Process audio through echo effect
  * 
- * Applies delay with feedback and wet/dry mix to stereo audio.
- * Processing is done in-place.
+ * Processes stereo interleaved 16-bit PCM audio in-place.
  * 
- * @param echo Pointer to echo state
- * @param buffer Stereo interleaved int16 buffer (modified in-place)
- * @param num_frames Number of stereo frames to process
- * 
- * @note Thread Safety: Not thread-safe. Call from single audio task only.
+ * @param e Pointer to echo state structure
+ * @param samples Pointer to stereo interleaved audio buffer
+ * @param num_samples Number of stereo sample pairs to process
  */
-void echo_process(echo_t *echo, int16_t *buffer, size_t num_frames);
-
-/**
- * @brief Reset echo buffer (clear delay line)
- * 
- * Call when switching tracks or seeking to prevent stale echoes.
- * 
- * @param echo Pointer to echo state
- */
-void echo_reset(echo_t *echo);
+void echo_process(echo_t *e, int16_t *samples, size_t num_samples);
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif // ECHO_H
+#endif /* FX_ECHO_H */
