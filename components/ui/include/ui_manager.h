@@ -173,6 +173,34 @@ void ui_manager_set_waveform_resolution(int divider);
  */
 int ui_manager_get_waveform_resolution(void);
 
+// ============================================================================
+// Search View Control
+// ============================================================================
+
+/**
+ * @brief Show search view overlay
+ * 
+ * Opens search interface for filtering tracks by text, BPM, and key.
+ * Can be shown as overlay on crate view.
+ */
+void ui_manager_show_search(void);
+
+/**
+ * @brief Hide search view overlay
+ */
+void ui_manager_hide_search(void);
+
+/**
+ * @brief Check if search view is visible
+ * 
+ * @return true if search overlay is active
+ */
+bool ui_manager_is_search_visible(void);
+
+// ============================================================================
+// Performance Mode
+// ============================================================================
+
 /**
  * @brief Enter performance mode
  * 
