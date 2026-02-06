@@ -30,6 +30,9 @@ extern "C" {
 // Echo buffer size (max delay ~500ms at 44.1kHz stereo)
 #define DSP_ECHO_BUFFER_SAMPLES (44100 / 2)
 
+// Maximum frames per process call (pre-allocated buffer size)
+#define DSP_MAX_FRAMES_PER_CALL 1024
+
 /**
  * @brief DSP effect types
  */
@@ -177,6 +180,11 @@ typedef struct {
     SemaphoreHandle_t mutex;
     uint32_t sample_rate;
     bool initialized;
+    
+    // Pre-allocated float buffers for real-time safe processing
+    float *work_buffer_l;
+    float *work_buffer_r;
+    size_t work_buffer_frames;
 } dsp_pipeline_t;
 
 // ============================================================================
