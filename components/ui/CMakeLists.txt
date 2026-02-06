@@ -10,6 +10,7 @@ idf_component_register(
         "src/playlist_view.c"
         "src/settings_view.c"
         "src/search_view.c"
+        "src/performance_view.c"
         "src/lvgl_driver.c"
         "src/gt911.c"
     INCLUDE_DIRS 
@@ -18,7 +19,7 @@ idf_component_register(
         driver
         freertos
     REQUIRES
-        lvgl
+        lvgl__lvgl
         main
         playlist
 )

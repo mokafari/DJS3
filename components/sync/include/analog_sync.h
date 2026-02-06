@@ -74,6 +74,22 @@ typedef enum {
 } analog_sync_pll_bandwidth_t;
 
 /**
+ * @brief Clock divider/multiplier presets
+ * 
+ * Divides or multiplies the 24 PPQN clock for compatibility with
+ * different sync standards or musical subdivisions.
+ */
+typedef enum {
+    ANALOG_SYNC_CLOCK_DIV_4  = -4,  ///< ÷4: 6 PPQN (whole notes)
+    ANALOG_SYNC_CLOCK_DIV_3  = -3,  ///< ÷3: 8 PPQN (triplet feel)
+    ANALOG_SYNC_CLOCK_DIV_2  = -2,  ///< ÷2: 12 PPQN (half time)
+    ANALOG_SYNC_CLOCK_1X     =  1,  ///< 1x: 24 PPQN (standard DIN sync)
+    ANALOG_SYNC_CLOCK_MUL_2  =  2,  ///< ×2: 48 PPQN (double time)
+    ANALOG_SYNC_CLOCK_MUL_3  =  3,  ///< ×3: 72 PPQN (triplet double)
+    ANALOG_SYNC_CLOCK_MUL_4  =  4   ///< ×4: 96 PPQN (hi-res)
+} analog_sync_clock_rate_t;
+
+/**
  * @brief Thread-safe session state snapshot
  * 
  * Use analog_sync_capture_state() to get a consistent snapshot for
@@ -219,6 +235,51 @@ float analog_sync_get_bpm(const analog_sync_t *sync);
  * @param swing_ms Swing delay in milliseconds (0-50)
  */
 void analog_sync_set_swing(analog_sync_t *sync, float swing_ms);
+
+/**
+ * @brief Get current swing amount
+ * 
+ * @param sync Analog sync handle
+ * @return Swing delay in milliseconds
+ */
+float analog_sync_get_swing(const analog_sync_t *sync);
+
+// ============================================================================
+// Clock divider/multiplier
+// ============================================================================
+
+/**
+ * @brief Set output clock rate (divider/multiplier)
+ * 
+ * In master mode, this affects the rate of output clock pulses.
+ * In slave mode, this affects how received pulses map to internal beats.
+ * 
+ * Example: ANALOG_SYNC_CLOCK_DIV_2 outputs 12 PPQN (half as many pulses).
+ * Example: ANALOG_SYNC_CLOCK_MUL_2 outputs 48 PPQN (twice as many pulses).
+ * 
+ * @param sync Analog sync handle
+ * @param rate Clock rate preset (div/mul)
+ */
+void analog_sync_set_clock_rate(analog_sync_t *sync, analog_sync_clock_rate_t rate);
+
+/**
+ * @brief Get current clock rate setting
+ * 
+ * @param sync Analog sync handle
+ * @return Current clock rate preset
+ */
+analog_sync_clock_rate_t analog_sync_get_clock_rate(const analog_sync_t *sync);
+
+/**
+ * @brief Get effective PPQN based on clock rate
+ * 
+ * Returns the actual pulses per quarter note after applying
+ * the divider/multiplier setting.
+ * 
+ * @param sync Analog sync handle
+ * @return Effective PPQN (e.g., 24 for 1x, 48 for 2x, 12 for ÷2)
+ */
+int analog_sync_get_effective_ppqn(const analog_sync_t *sync);
 
 // ============================================================================
 // Transport control

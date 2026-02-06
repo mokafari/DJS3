@@ -265,7 +265,7 @@ static lv_obj_t* create_perf_button(lv_obj_t *parent, const char *text,
     lv_obj_set_style_text_color(lbl, fg, LV_STATE_DEFAULT);
     lv_obj_set_style_text_color(lbl, lv_color_black(), LV_STATE_PRESSED);
     lv_obj_set_style_text_color(lbl, lv_color_black(), LV_STATE_CHECKED);
-    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
     lv_obj_center(lbl);
     
     if (label_out) {
@@ -511,7 +511,7 @@ void performance_view_init(uint32_t width, uint32_t height) {
     // ========================================================================
     time_label = lv_label_create(perf_container);
     lv_obj_set_style_text_color(time_label, hud_theme_get_foreground_color(), 0);
-    lv_obj_set_style_text_font(time_label, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_font(time_label, &lv_font_montserrat_14, 0);
     lv_label_set_text(time_label, "-00:00");
     lv_obj_align(time_label, LV_ALIGN_TOP_RIGHT, -10, 5);
     

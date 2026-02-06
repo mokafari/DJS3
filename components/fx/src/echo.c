@@ -5,9 +5,19 @@
 
 #include "echo.h"
 #include <string.h>
+#include <stdlib.h>
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 
 static const char *TAG = "echo";
+
+/**
+ * @brief Maximum delay buffer size
+ * 
+ * Sized for 1 beat at 60 BPM @ 44100 Hz stereo = ~88200 samples
+ * We use 96000 for headroom.
+ */
+#define ECHO_BUFFER_SIZE 96000
 
 /** @brief Clamp float value to range */
 static inline float clampf(float val, float min, float max) {
@@ -16,17 +26,32 @@ static inline float clampf(float val, float min, float max) {
     return val;
 }
 
-/** @brief Recalculate delay samples based on BPM and ratio */
+float echo_division_to_ratio(echo_beat_division_t division) {
+    switch (division) {
+        case ECHO_BEAT_1_4: return 0.25f;
+        case ECHO_BEAT_1_2: return 0.5f;
+        case ECHO_BEAT_3_4: return 0.75f;
+        case ECHO_BEAT_1:   return 1.0f;
+        default:            return 0.5f;
+    }
+}
+
+/** @brief Recalculate delay samples based on BPM and division */
 static void echo_update_delay(echo_t *e) {
+    if (!e->initialized || e->bpm < 30.0f) return;
+    
+    // Get ratio from beat division
+    float ratio = echo_division_to_ratio(e->division);
+    
     // Calculate delay time in seconds: (60 / BPM) * ratio
-    float delay_sec = (60.0f / e->bpm) * e->delay_ratio;
+    float delay_sec = (60.0f / e->bpm) * ratio;
     
     // Convert to stereo sample pairs
     size_t delay = (size_t)(delay_sec * e->sample_rate) * 2;
     
     // Clamp to buffer size
-    if (delay >= ECHO_MAX_DELAY_SAMPLES) {
-        delay = ECHO_MAX_DELAY_SAMPLES - 2;
+    if (delay >= e->buffer_size) {
+        delay = e->buffer_size - 2;
     }
     if (delay < 2) {
         delay = 2;
@@ -34,29 +59,59 @@ static void echo_update_delay(echo_t *e) {
     
     e->delay_samples = delay;
     
-    ESP_LOGD(TAG, "Delay updated: %.1f BPM, ratio %.2f, %zu samples (%.1f ms)",
-             e->bpm, e->delay_ratio, e->delay_samples,
+    ESP_LOGD(TAG, "Delay updated: %.1f BPM, division %d, %zu samples (%.1f ms)",
+             e->bpm, e->division, e->delay_samples,
              (float)e->delay_samples / (e->sample_rate * 2.0f) * 1000.0f);
 }
 
-void echo_init(echo_t *e, float sample_rate) {
+bool echo_init(echo_t *e) {
     if (e == NULL) {
         ESP_LOGE(TAG, "NULL pointer passed to echo_init");
-        return;
+        return false;
     }
     
     memset(e, 0, sizeof(echo_t));
     
-    e->sample_rate = sample_rate;
+    e->sample_rate = ECHO_DEFAULT_SAMPLE_RATE;
     e->bpm = 120.0f;
-    e->delay_ratio = 0.5f;  // Default to 1/2 beat
+    e->division = ECHO_BEAT_1_2;  // Default to 1/2 beat
     e->feedback = 0.5f;
     e->mix = 0.5f;
     e->write_pos = 0;
+    e->buffer_size = ECHO_BUFFER_SIZE;
     
+    // Try to allocate buffer in PSRAM first, fall back to regular heap
+    e->buffer = heap_caps_malloc(ECHO_BUFFER_SIZE * sizeof(int16_t), MALLOC_CAP_SPIRAM);
+    if (e->buffer == NULL) {
+        e->buffer = malloc(ECHO_BUFFER_SIZE * sizeof(int16_t));
+    }
+    
+    if (e->buffer == NULL) {
+        ESP_LOGE(TAG, "Failed to allocate delay buffer");
+        return false;
+    }
+    
+    memset(e->buffer, 0, ECHO_BUFFER_SIZE * sizeof(int16_t));
+    
+    e->initialized = true;
     echo_update_delay(e);
     
-    ESP_LOGI(TAG, "Echo initialized: %.0f Hz sample rate", sample_rate);
+    ESP_LOGI(TAG, "Echo initialized: %.0f Hz sample rate, buffer %zu samples",
+             e->sample_rate, e->buffer_size);
+    
+    return true;
+}
+
+void echo_deinit(echo_t *e) {
+    if (e == NULL) return;
+    
+    if (e->buffer != NULL) {
+        free(e->buffer);
+        e->buffer = NULL;
+    }
+    
+    e->initialized = false;
+    ESP_LOGI(TAG, "Echo deinitialized");
 }
 
 void echo_set_bpm(echo_t *e, float bpm) {
@@ -66,38 +121,30 @@ void echo_set_bpm(echo_t *e, float bpm) {
     echo_update_delay(e);
 }
 
-void echo_set_delay_ratio(echo_t *e, float ratio) {
+void echo_set_beat_division(echo_t *e, echo_beat_division_t division) {
     if (e == NULL) return;
     
-    // Snap to valid ratios: 0.25, 0.5, 0.75, 1.0
-    if (ratio <= 0.375f) {
-        e->delay_ratio = 0.25f;
-    } else if (ratio <= 0.625f) {
-        e->delay_ratio = 0.5f;
-    } else if (ratio <= 0.875f) {
-        e->delay_ratio = 0.75f;
-    } else {
-        e->delay_ratio = 1.0f;
+    if (division < ECHO_BEAT_COUNT) {
+        e->division = division;
+        echo_update_delay(e);
     }
-    
-    echo_update_delay(e);
 }
 
 void echo_set_feedback(echo_t *e, float feedback) {
     if (e == NULL) return;
     
     // Clamp to 0.0 - 0.95 to prevent runaway feedback
-    e->feedback = clampf(feedback, 0.0f, 0.95f);
+    e->feedback = clampf(feedback, 0.0f, ECHO_MAX_FEEDBACK);
 }
 
-void echo_set_mix(echo_t *e, float wet_dry) {
+void echo_set_mix(echo_t *e, float mix) {
     if (e == NULL) return;
     
-    e->mix = clampf(wet_dry, 0.0f, 1.0f);
+    e->mix = clampf(mix, 0.0f, 1.0f);
 }
 
-void echo_process(echo_t *e, int16_t *samples, size_t num_samples) {
-    if (e == NULL || samples == NULL || num_samples == 0) {
+void echo_process(echo_t *e, int16_t *samples, size_t num_frames) {
+    if (e == NULL || samples == NULL || num_frames == 0 || !e->initialized) {
         return;
     }
     
@@ -105,13 +152,13 @@ void echo_process(echo_t *e, int16_t *samples, size_t num_samples) {
     const float wet = e->mix;
     const float dry = 1.0f - wet;
     const size_t delay = e->delay_samples;
-    const size_t buf_size = ECHO_MAX_DELAY_SAMPLES;
+    const size_t buf_size = e->buffer_size;
     
     int16_t *buffer = e->buffer;
     size_t write_pos = e->write_pos;
     
-    // Process stereo sample pairs
-    for (size_t i = 0; i < num_samples * 2; i += 2) {
+    // Process stereo sample pairs (num_frames = number of stereo frames)
+    for (size_t i = 0; i < num_frames * 2; i += 2) {
         // Calculate read position (behind write position by delay amount)
         size_t read_pos = (write_pos + buf_size - delay) % buf_size;
         
@@ -156,4 +203,20 @@ void echo_process(echo_t *e, int16_t *samples, size_t num_samples) {
     }
     
     e->write_pos = write_pos;
+}
+
+void echo_clear(echo_t *e) {
+    if (e == NULL || e->buffer == NULL) return;
+    
+    memset(e->buffer, 0, e->buffer_size * sizeof(int16_t));
+    e->write_pos = 0;
+    
+    ESP_LOGD(TAG, "Delay buffer cleared");
+}
+
+float echo_get_delay_ms(const echo_t *e) {
+    if (e == NULL || e->sample_rate < 1.0f) return 0.0f;
+    
+    // delay_samples is in stereo pairs, so divide by 2 for mono samples
+    return (float)(e->delay_samples / 2) / e->sample_rate * 1000.0f;
 }

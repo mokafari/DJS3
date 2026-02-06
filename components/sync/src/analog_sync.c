@@ -183,6 +183,11 @@ struct analog_sync_s {
     
     // LED state
     analog_sync_led_state_t led_state;
+    
+    // Clock divider/multiplier
+    analog_sync_clock_rate_t clock_rate;
+    uint8_t clock_divider_counter;  // Counter for division
+    int effective_ppqn;             // Cached effective PPQN
 };
 
 // ============================================================================
@@ -222,11 +227,19 @@ static uint64_t bpm_to_period_us(float bpm) {
 }
 
 /**
- * @brief Convert pulse period to BPM
+ * @brief Convert pulse period to BPM (at standard 24 PPQN)
  */
 static float period_us_to_bpm(uint64_t period_us) {
     if (period_us == 0) return DEFAULT_BPM;
     return 60000000.0f / ((float)period_us * ANALOG_SYNC_PPQN);
+}
+
+/**
+ * @brief Convert pulse period to BPM with custom PPQN
+ */
+static float period_us_to_bpm_ppqn(uint64_t period_us, int ppqn) {
+    if (period_us == 0 || ppqn == 0) return DEFAULT_BPM;
+    return 60000000.0f / ((float)period_us * ppqn);
 }
 
 /**
@@ -284,6 +297,11 @@ analog_sync_t *analog_sync_create(const analog_sync_config_t *config) {
     sync->pll_bandwidth = ANALOG_SYNC_PLL_NORMAL;
     pll_init(&sync->pll, get_pll_alpha(sync->pll_bandwidth));
     drift_tracker_init(&sync->drift);
+    
+    // Initialize clock rate (1x = standard 24 PPQN)
+    sync->clock_rate = ANALOG_SYNC_CLOCK_1X;
+    sync->clock_divider_counter = 0;
+    sync->effective_ppqn = ANALOG_SYNC_PPQN;
     
     jitter_filter_init(&sync->jitter);
     
@@ -493,7 +511,16 @@ void analog_sync_set_bpm(analog_sync_t *sync, float bpm) {
     
     // Update timer if running in master mode
     if (sync->mode == ANALOG_SYNC_MODE_MASTER && sync->running) {
-        uint64_t period_us = bpm_to_period_us(bpm);
+        uint64_t base_period_us = bpm_to_period_us(bpm);
+        uint64_t period_us = base_period_us;
+        
+        // Adjust for clock rate
+        if (sync->clock_rate < 0) {
+            period_us = base_period_us * (-sync->clock_rate);
+        } else if (sync->clock_rate > 1) {
+            period_us = base_period_us / sync->clock_rate;
+        }
+        
         esp_timer_stop(sync->clock_timer);
         esp_timer_start_periodic(sync->clock_timer, period_us);
         ESP_LOGD(TAG, "Master BPM updated to %.2f (period=%llu us)", bpm, period_us);
@@ -522,6 +549,80 @@ void analog_sync_set_swing(analog_sync_t *sync, float swing_ms) {
 
 float analog_sync_get_swing(const analog_sync_t *sync) {
     return sync ? sync->swing_ms : 0.0f;
+}
+
+// ============================================================================
+// Clock divider/multiplier
+// ============================================================================
+
+/**
+ * @brief Calculate effective PPQN from clock rate setting
+ */
+static int calculate_effective_ppqn(analog_sync_clock_rate_t rate) {
+    if (rate < 0) {
+        // Divider: negative values divide
+        return ANALOG_SYNC_PPQN / (-rate);
+    } else if (rate > 1) {
+        // Multiplier: values > 1 multiply
+        return ANALOG_SYNC_PPQN * rate;
+    }
+    return ANALOG_SYNC_PPQN;  // 1x = standard
+}
+
+void analog_sync_set_clock_rate(analog_sync_t *sync, analog_sync_clock_rate_t rate) {
+    if (!sync) return;
+    
+    // Validate rate
+    if (rate == 0 || rate < -4 || rate > 4) {
+        ESP_LOGW(TAG, "Invalid clock rate %d, ignoring", rate);
+        return;
+    }
+    
+    sync->clock_rate = rate;
+    sync->clock_divider_counter = 0;  // Reset counter on rate change
+    sync->effective_ppqn = calculate_effective_ppqn(rate);
+    
+    const char *rate_str;
+    switch (rate) {
+        case ANALOG_SYNC_CLOCK_DIV_4: rate_str = "÷4 (6 PPQN)"; break;
+        case ANALOG_SYNC_CLOCK_DIV_3: rate_str = "÷3 (8 PPQN)"; break;
+        case ANALOG_SYNC_CLOCK_DIV_2: rate_str = "÷2 (12 PPQN)"; break;
+        case ANALOG_SYNC_CLOCK_1X:    rate_str = "1x (24 PPQN)"; break;
+        case ANALOG_SYNC_CLOCK_MUL_2: rate_str = "×2 (48 PPQN)"; break;
+        case ANALOG_SYNC_CLOCK_MUL_3: rate_str = "×3 (72 PPQN)"; break;
+        case ANALOG_SYNC_CLOCK_MUL_4: rate_str = "×4 (96 PPQN)"; break;
+        default: rate_str = "unknown"; break;
+    }
+    
+    ESP_LOGI(TAG, "Clock rate set to %s", rate_str);
+    
+    // If running in master mode, restart timer with new rate
+    if (sync->mode == ANALOG_SYNC_MODE_MASTER && sync->running) {
+        uint64_t base_period_us = bpm_to_period_us(sync->master_bpm);
+        uint64_t adjusted_period_us;
+        
+        if (rate < 0) {
+            // Divider: longer period (fewer pulses)
+            adjusted_period_us = base_period_us * (-rate);
+        } else if (rate > 1) {
+            // Multiplier: shorter period (more pulses)
+            adjusted_period_us = base_period_us / rate;
+        } else {
+            adjusted_period_us = base_period_us;
+        }
+        
+        esp_timer_stop(sync->clock_timer);
+        esp_timer_start_periodic(sync->clock_timer, adjusted_period_us);
+        ESP_LOGD(TAG, "Timer period adjusted to %llu us", adjusted_period_us);
+    }
+}
+
+analog_sync_clock_rate_t analog_sync_get_clock_rate(const analog_sync_t *sync) {
+    return sync ? sync->clock_rate : ANALOG_SYNC_CLOCK_1X;
+}
+
+int analog_sync_get_effective_ppqn(const analog_sync_t *sync) {
+    return sync ? sync->effective_ppqn : ANALOG_SYNC_PPQN;
 }
 
 // ============================================================================
@@ -554,13 +655,25 @@ void analog_sync_start(analog_sync_t *sync) {
             esp_timer_start_once(sync->pulse_off_timer, PULSE_WIDTH_US);
         }
         
-        // Start periodic clock timer
-        uint64_t period_us = bpm_to_period_us(sync->master_bpm);
+        // Start periodic clock timer (adjusted for clock rate)
+        uint64_t base_period_us = bpm_to_period_us(sync->master_bpm);
+        uint64_t period_us = base_period_us;
+        
+        // Adjust period for clock divider/multiplier
+        if (sync->clock_rate < 0) {
+            // Divider: longer period (fewer pulses)
+            period_us = base_period_us * (-sync->clock_rate);
+        } else if (sync->clock_rate > 1) {
+            // Multiplier: shorter period (more pulses)
+            period_us = base_period_us / sync->clock_rate;
+        }
+        
+        sync->clock_divider_counter = 0;
         esp_timer_start_periodic(sync->clock_timer, period_us);
         
         update_led_state(sync, ANALOG_SYNC_LED_RUNNING);
-        ESP_LOGI(TAG, "DIN sync started @ %.2f BPM (period=%llu us)", 
-                 sync->master_bpm, period_us);
+        ESP_LOGI(TAG, "DIN sync started @ %.2f BPM (period=%llu us, rate=%d)", 
+                 sync->master_bpm, period_us, sync->clock_rate);
         
         // Fire start callback
         if (sync->transport_callback) {
@@ -612,8 +725,16 @@ void analog_sync_continue(analog_sync_t *sync) {
             gpio_set_level(sync->run_out_pin, 1);
         }
         
-        // Resume clock timer
-        uint64_t period_us = bpm_to_period_us(sync->master_bpm);
+        // Resume clock timer (adjusted for clock rate)
+        uint64_t base_period_us = bpm_to_period_us(sync->master_bpm);
+        uint64_t period_us = base_period_us;
+        
+        if (sync->clock_rate < 0) {
+            period_us = base_period_us * (-sync->clock_rate);
+        } else if (sync->clock_rate > 1) {
+            period_us = base_period_us / sync->clock_rate;
+        }
+        
         esp_timer_start_periodic(sync->clock_timer, period_us);
         
         update_led_state(sync, ANALOG_SYNC_LED_RUNNING);
@@ -667,6 +788,7 @@ void analog_sync_reset_phase(analog_sync_t *sync) {
     
     portENTER_CRITICAL(&sync->spinlock);
     sync->phase = 0.0f;
+    sync->clock_divider_counter = 0;
     if (sync->mode == ANALOG_SYNC_MODE_MASTER) {
         sync->pulse_count = 0;
         sync->swing_pulse_counter = 0;
@@ -714,18 +836,34 @@ static void clock_output_timer_cb(void *arg) {
         return;
     }
     
-    // Calculate swing delay for off-beat 16th notes
+    // For multiplied clocks, we output multiple pulses per internal 24 PPQN tick
+    // For divided clocks, we output fewer pulses
+    // Internal pulse_count always tracks at effective PPQN
+    
+    // Calculate internal pulse position (normalized to 24 PPQN equivalent)
+    int effective_ppqn = sync->effective_ppqn;
+    uint32_t internal_pulse = sync->pulse_count;
+    
+    // Map pulse to 24 PPQN equivalent for swing calculation
+    uint32_t pulse_24ppqn_equiv;
+    if (sync->clock_rate < 0) {
+        // Divider: each output pulse = multiple internal pulses
+        pulse_24ppqn_equiv = internal_pulse * (-sync->clock_rate);
+    } else if (sync->clock_rate > 1) {
+        // Multiplier: multiple output pulses per internal pulse
+        pulse_24ppqn_equiv = internal_pulse / sync->clock_rate;
+    } else {
+        pulse_24ppqn_equiv = internal_pulse;
+    }
+    
+    // Calculate swing delay for off-beat 16th notes (at 24 PPQN equivalent)
     // Swing applies to pulses 6, 18 (the "ands" of beats at 24ppqn)
-    // Every 12 pulses = 8th note, every 6 pulses = 16th note
-    uint32_t pulse_in_beat = sync->pulse_count % ANALOG_SYNC_PPQN;
-    bool is_swing_pulse = (pulse_in_beat == 6) || (pulse_in_beat == 18);
+    uint32_t pulse_in_beat_24 = pulse_24ppqn_equiv % ANALOG_SYNC_PPQN;
+    bool is_swing_pulse = (pulse_in_beat_24 == 6) || (pulse_in_beat_24 == 18);
     
     if (is_swing_pulse && sync->swing_ms > 0.0f) {
-        // Delay this pulse by swing amount
-        // Note: For precise swing, we'd use a one-shot timer, but for simplicity
-        // we'll just add a small delay. In production, use a swing timer.
         uint32_t swing_us = (uint32_t)(sync->swing_ms * 1000.0f);
-        esp_rom_delay_us(swing_us > 1000 ? 1000 : swing_us); // Cap at 1ms for safety
+        esp_rom_delay_us(swing_us > 1000 ? 1000 : swing_us);
     }
     
     // Generate pulse
@@ -735,22 +873,22 @@ static void clock_output_timer_cb(void *arg) {
         esp_timer_start_once(sync->pulse_off_timer, PULSE_WIDTH_US);
     }
     
-    // Update counters
+    // Update counters (using effective PPQN)
     sync->pulse_count++;
-    sync->phase = (float)(sync->pulse_count % ANALOG_SYNC_PPQN) / (float)ANALOG_SYNC_PPQN;
+    sync->phase = (float)(sync->pulse_count % effective_ppqn) / (float)effective_ppqn;
     
-    // Update beat position
-    sync->beat_position = (double)sync->pulse_count / (double)ANALOG_SYNC_PPQN;
+    // Update beat position (normalized to standard timing)
+    sync->beat_position = (double)sync->pulse_count / (double)effective_ppqn;
     
     // Update bar/quantum phase
-    uint32_t pulses_per_quantum = (uint32_t)(sync->quantum * ANALOG_SYNC_PPQN);
+    uint32_t pulses_per_quantum = (uint32_t)(sync->quantum * effective_ppqn);
     if (pulses_per_quantum > 0) {
         uint32_t pulse_in_bar = sync->pulse_count % pulses_per_quantum;
         sync->bar_phase = (double)pulse_in_bar / (double)pulses_per_quantum * sync->quantum;
     }
     
-    // Fire beat callback on beat boundaries (every 24 pulses)
-    if ((sync->pulse_count % ANALOG_SYNC_PPQN) == 0) {
+    // Fire beat callback on beat boundaries (every effective_ppqn pulses)
+    if ((sync->pulse_count % effective_ppqn) == 0) {
         sync->last_beat_time_us = esp_timer_get_time();
         if (sync->transport_callback) {
             sync->transport_callback(sync, ANALOG_SYNC_EVENT_BEAT, 
@@ -812,9 +950,9 @@ static void IRAM_ATTR clock_input_isr(void *arg) {
             if (filtered_us > 0) {
                 sync->current_period_us = filtered_us;
                 
-                // Calculate BPM (defer float ops to tick for safety, but 
-                // ESP32 handles them in ISR)
-                float new_bpm = period_us_to_bpm(filtered_us);
+                // Calculate BPM using effective PPQN (respects clock rate setting)
+                // This allows interpreting incoming clock at different rates
+                float new_bpm = period_us_to_bpm_ppqn(filtered_us, sync->effective_ppqn);
                 new_bpm = clamp_bpm(new_bpm);
                 
                 // Update PLL for drift correction
@@ -855,15 +993,19 @@ static void IRAM_ATTR clock_input_isr(void *arg) {
     sync->last_pulse_time_us = now_us;
     sync->slave_pulse_count++;
     
+    // Use effective PPQN based on clock rate setting
+    // This allows interpreting incoming clock at different rates
+    int effective_ppqn = sync->effective_ppqn;
+    
     // Update phase
-    uint32_t pulse_in_beat = sync->slave_pulse_count % ANALOG_SYNC_PPQN;
-    sync->phase = (float)pulse_in_beat / (float)ANALOG_SYNC_PPQN;
+    uint32_t pulse_in_beat = sync->slave_pulse_count % effective_ppqn;
+    sync->phase = (float)pulse_in_beat / (float)effective_ppqn;
     
     // Update beat position (fractional beats since start)
-    sync->beat_position = (double)sync->slave_pulse_count / (double)ANALOG_SYNC_PPQN;
+    sync->beat_position = (double)sync->slave_pulse_count / (double)effective_ppqn;
     
     // Update bar/quantum phase
-    uint32_t pulses_per_quantum = (uint32_t)(sync->quantum * ANALOG_SYNC_PPQN);
+    uint32_t pulses_per_quantum = (uint32_t)(sync->quantum * effective_ppqn);
     if (pulses_per_quantum > 0) {
         uint32_t pulse_in_bar = sync->slave_pulse_count % pulses_per_quantum;
         sync->bar_phase = (double)pulse_in_bar / (double)pulses_per_quantum * sync->quantum;
@@ -1235,8 +1377,9 @@ void analog_sync_align_to_quantum(analog_sync_t *sync) {
     
     portENTER_CRITICAL(&sync->spinlock);
     
-    // Calculate pulses per quantum
-    uint32_t pulses_per_quantum = (uint32_t)(sync->quantum * ANALOG_SYNC_PPQN);
+    // Calculate pulses per quantum using effective PPQN
+    int effective_ppqn = sync->effective_ppqn;
+    uint32_t pulses_per_quantum = (uint32_t)(sync->quantum * effective_ppqn);
     
     if (sync->mode == ANALOG_SYNC_MODE_MASTER) {
         // Round pulse count to nearest quantum boundary
@@ -1256,7 +1399,7 @@ void analog_sync_align_to_quantum(analog_sync_t *sync) {
     
     sync->bar_phase = 0.0;
     sync->beat_position = (double)((sync->mode == ANALOG_SYNC_MODE_MASTER) ? 
-                          sync->pulse_count : sync->slave_pulse_count) / ANALOG_SYNC_PPQN;
+                          sync->pulse_count : sync->slave_pulse_count) / effective_ppqn;
     
     portEXIT_CRITICAL(&sync->spinlock);
     
@@ -1307,11 +1450,14 @@ void analog_sync_capture_state(const analog_sync_t *sync,
     state->is_running = sync->running;
     state->is_locked = sync->clock_locked;
     
+    // Use effective PPQN for beat calculations
+    int effective_ppqn = sync->effective_ppqn;
+    
     if (sync->mode == ANALOG_SYNC_MODE_MASTER) {
         state->bpm = sync->master_bpm;
         state->pulse_count = sync->pulse_count;
         state->phase = sync->phase;
-        state->beat = (double)sync->pulse_count / ANALOG_SYNC_PPQN;
+        state->beat = (double)sync->pulse_count / effective_ppqn;
     } else {
         state->bpm = sync->slave_bpm;
         state->pulse_count = sync->slave_pulse_count;
@@ -1322,9 +1468,19 @@ void analog_sync_capture_state(const analog_sync_t *sync,
     state->bar_phase = sync->bar_phase;
     state->drift_ppb = sync->drift.drift_ppb;
     
-    // Calculate predicted times
+    // Calculate predicted times using effective PPQN
     if (state->bpm > 0) {
-        uint64_t period_us = bpm_to_period_us(state->bpm);
+        // Period per pulse at effective PPQN
+        uint64_t period_us = (uint64_t)(60000000.0 / (state->bpm * effective_ppqn));
+        
+        // Adjust period for clock rate (master mode)
+        if (sync->mode == ANALOG_SYNC_MODE_MASTER) {
+            if (sync->clock_rate < 0) {
+                period_us = period_us * (-sync->clock_rate);
+            } else if (sync->clock_rate > 1) {
+                period_us = period_us / sync->clock_rate;
+            }
+        }
         
         // Time since last pulse
         uint64_t since_last_pulse = 0;
@@ -1340,8 +1496,8 @@ void analog_sync_capture_state(const analog_sync_t *sync,
         }
         
         // Next beat time
-        uint32_t pulses_to_beat = ANALOG_SYNC_PPQN - (state->pulse_count % ANALOG_SYNC_PPQN);
-        if (pulses_to_beat == ANALOG_SYNC_PPQN) pulses_to_beat = 0;
+        uint32_t pulses_to_beat = effective_ppqn - (state->pulse_count % effective_ppqn);
+        if (pulses_to_beat == (uint32_t)effective_ppqn) pulses_to_beat = 0;
         state->next_beat_time_us = now_us + (pulses_to_beat * period_us) - since_last_pulse;
     } else {
         state->next_pulse_time_us = 0;

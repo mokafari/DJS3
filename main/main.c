@@ -597,7 +597,7 @@ void app_main(void)
 
     // Initialize external controller system (HID/MIDI)
     ESP_LOGI(TAG, "Initializing external controller system...");
-    if (!ext_controller_init()) {
+    if (!ext_ctrl_init()) {
         ESP_LOGW(TAG, "External controller initialization failed - HID/MIDI disabled");
     } else {
         ESP_LOGI(TAG, "External controller system initialized");
