@@ -39,6 +39,8 @@ idf_component_register(
         "ext_controller.c"
         # Auto-DJ System
         "auto_dj.c"
+        # Performance Mode
+        "performance.c"
     INCLUDE_DIRS "include"
     REQUIRES driver nvs_flash esp_psram libhelix-mp3 fatfs usb ui timestretch esp_timer esp-dsp fx sync analysis playlist esp_adc
 )
