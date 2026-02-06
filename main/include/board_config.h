@@ -95,6 +95,10 @@ extern "C" {
 #define BUTTON_HOT_CUE_2_PIN      (-1)
 #define BUTTON_HOT_CUE_3_PIN      (-1)
 #define BUTTON_HOT_CUE_4_PIN      (-1)
+#define BUTTON_HOT_CUE_5_PIN      (-1)
+#define BUTTON_HOT_CUE_6_PIN      (-1)
+#define BUTTON_HOT_CUE_7_PIN      (-1)
+#define BUTTON_HOT_CUE_8_PIN      (-1)
 
 #define JOG_WHEEL_A_PIN           (-1)
 #define JOG_WHEEL_B_PIN           (-1)

@@ -26,6 +26,10 @@ typedef enum {
     BUTTON_HOT_CUE_2,
     BUTTON_HOT_CUE_3,
     BUTTON_HOT_CUE_4,
+    BUTTON_HOT_CUE_5,
+    BUTTON_HOT_CUE_6,
+    BUTTON_HOT_CUE_7,
+    BUTTON_HOT_CUE_8,
     BUTTON_COUNT
 } button_id_t;
 
