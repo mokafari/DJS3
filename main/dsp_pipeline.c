@@ -359,6 +359,16 @@ void dsp_pipeline_destroy(dsp_pipeline_t *pipeline) {
         }
     }
     
+    // Free pre-allocated work buffers
+    if (pipeline->work_buffer_l) {
+        free(pipeline->work_buffer_l);
+        pipeline->work_buffer_l = NULL;
+    }
+    if (pipeline->work_buffer_r) {
+        free(pipeline->work_buffer_r);
+        pipeline->work_buffer_r = NULL;
+    }
+    
     xSemaphoreGive(pipeline->mutex);
     vSemaphoreDelete(pipeline->mutex);
     
@@ -639,33 +649,37 @@ static void process_master_limiter(dsp_pipeline_t *pipeline, float *left, float 
 void dsp_pipeline_process(dsp_pipeline_t *pipeline, int16_t *samples, size_t num_frames) {
     if (!pipeline || !pipeline->initialized || !samples || num_frames == 0) return;
     
-    // Convert to float for processing
-    float *left = malloc(num_frames * sizeof(float));
-    float *right = malloc(num_frames * sizeof(float));
+    // Use pre-allocated buffers - real-time safe (no malloc in audio path)
+    float *left = pipeline->work_buffer_l;
+    float *right = pipeline->work_buffer_r;
     
-    if (!left || !right) {
-        if (left) free(left);
-        if (right) free(right);
-        return;
+    // Process in chunks if num_frames exceeds buffer size
+    size_t frames_processed = 0;
+    while (frames_processed < num_frames) {
+        size_t chunk_frames = num_frames - frames_processed;
+        if (chunk_frames > pipeline->work_buffer_frames) {
+            chunk_frames = pipeline->work_buffer_frames;
+        }
+        
+        int16_t *chunk_samples = samples + (frames_processed * 2);
+        
+        // Deinterleave and convert to float
+        for (size_t i = 0; i < chunk_frames; i++) {
+            left[i] = sample_to_float(chunk_samples[i * 2]);
+            right[i] = sample_to_float(chunk_samples[i * 2 + 1]);
+        }
+        
+        // Process float version
+        dsp_pipeline_process_float(pipeline, left, right, chunk_frames);
+        
+        // Convert back and interleave
+        for (size_t i = 0; i < chunk_frames; i++) {
+            chunk_samples[i * 2] = float_to_sample(left[i]);
+            chunk_samples[i * 2 + 1] = float_to_sample(right[i]);
+        }
+        
+        frames_processed += chunk_frames;
     }
-    
-    // Deinterleave and convert to float
-    for (size_t i = 0; i < num_frames; i++) {
-        left[i] = sample_to_float(samples[i * 2]);
-        right[i] = sample_to_float(samples[i * 2 + 1]);
-    }
-    
-    // Process float version
-    dsp_pipeline_process_float(pipeline, left, right, num_frames);
-    
-    // Convert back and interleave
-    for (size_t i = 0; i < num_frames; i++) {
-        samples[i * 2] = float_to_sample(left[i]);
-        samples[i * 2 + 1] = float_to_sample(right[i]);
-    }
-    
-    free(left);
-    free(right);
 }
 
 void dsp_pipeline_process_float(dsp_pipeline_t *pipeline,
