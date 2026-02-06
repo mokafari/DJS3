@@ -39,12 +39,26 @@
 #include "metadata.h"
 #include "analyzer.h"
 #include "library_db.h"
+#include "preferences.h"
+#include "track_history.h"
+#include "dsp_pipeline.h"
+#include "slip_mode.h"
+#include "jog_wheel.h"
+#include "led_controller.h"
+#include "ext_controller.h"
+#include "auto_dj.h"
+#include "recorder.h"
+#include "track_prep.h"
+#include "search_view.h"
 
 #ifdef CONFIG_HW_TEST_MODE
 #include "hw_test_harness.h"
 #endif
 
 static const char *TAG = "main";
+
+// Global DSP pipeline instance
+static dsp_pipeline_t g_dsp_pipeline;
 
 /**
  * @brief Initialize NVS (Non-Volatile Storage)
@@ -438,6 +452,46 @@ void app_main(void)
         ESP_LOGI(TAG, "Storage init complete");
     }
 
+    // Initialize preferences system (depends on NVS)
+    ESP_LOGI(TAG, "Initializing preferences system...");
+    if (!prefs_init()) {
+        ESP_LOGW(TAG, "Preferences initialization failed - using defaults");
+    } else {
+        // Pre-load audio and display preferences for fast access during playback
+        prefs_cache_preload(PREFS_CAT_AUDIO);
+        prefs_cache_preload(PREFS_CAT_DISPLAY);
+        prefs_cache_preload(PREFS_CAT_CONTROLS);
+        ESP_LOGI(TAG, "Preferences initialized and cached");
+    }
+
+    // Initialize DSP pipeline (standalone, no dependencies)
+    ESP_LOGI(TAG, "Initializing DSP pipeline...");
+    if (!dsp_pipeline_init(&g_dsp_pipeline, 44100)) {
+        ESP_LOGW(TAG, "DSP pipeline initialization failed - effects unavailable");
+    } else {
+        // Configure default effect chain: EQ -> Filter -> Limiter
+        dsp_effect_config_t eq_cfg;
+        dsp_eq_default(&eq_cfg);
+        dsp_pipeline_add_effect(&g_dsp_pipeline, &eq_cfg);
+        
+        // Enable master limiter to prevent clipping
+        dsp_master_limiter_t limiter_cfg = {
+            .enabled = true,
+            .threshold = 0.95f,
+            .ceiling = 0.99f,
+            .release_ms = 50.0f
+        };
+        dsp_pipeline_set_master_limiter(&g_dsp_pipeline, &limiter_cfg);
+        ESP_LOGI(TAG, "DSP pipeline initialized with EQ and limiter");
+    }
+
+    // Initialize slip mode (standalone)
+    ESP_LOGI(TAG, "Initializing slip mode...");
+    slip_mode_init();
+    slip_mode_set_sample_rate(44100);
+    slip_mode_set_crossfade(50);  // 50ms crossfade on snap-back
+    ESP_LOGI(TAG, "Slip mode initialized");
+
     // Initialize OpenDeck metadata system
     ESP_LOGI(TAG, "Initializing metadata system...");
     metadata_init();
@@ -454,10 +508,27 @@ void app_main(void)
         ESP_LOGW(TAG, "No library.db found - will rebuild on first scan");
     }
     
+    // Initialize track history (depends on storage)
+    ESP_LOGI(TAG, "Initializing track history...");
+    if (!track_history_init()) {
+        ESP_LOGW(TAG, "Track history initialization failed - history tracking disabled");
+    } else {
+        ESP_LOGI(TAG, "Track history initialized: %lu unique tracks, %lu total plays",
+                 track_history_get_total_tracks(), track_history_get_total_plays());
+    }
+
     // Initialize background analyzer
     ESP_LOGI(TAG, "Initializing analyzer...");
     analyzer_init();
     ESP_LOGI(TAG, "Analyzer initialized");
+
+    // Initialize track prep system
+    ESP_LOGI(TAG, "Initializing track prep system...");
+    if (!track_prep_init()) {
+        ESP_LOGW(TAG, "Track prep initialization failed - batch analysis unavailable");
+    } else {
+        ESP_LOGI(TAG, "Track prep system initialized");
+    }
 
     // Initialize audio output (non-critical)
     ESP_LOGI(TAG, "Initializing audio output...");
@@ -494,7 +565,50 @@ void app_main(void)
     if (!pitch_control_init()) {
         ESP_LOGW(TAG, "Pitch control initialization failed - continuing anyway");
     } else {
-        ESP_LOGI(TAG, "Pitch control init complete");
+        // Apply pitch range from preferences
+        int32_t pitch_range = prefs_get_pitch_range();
+        ESP_LOGI(TAG, "Pitch control init complete (range: +/-%ld%%)", (long)pitch_range);
+    }
+
+    // Initialize jog wheel controller (after controls)
+    ESP_LOGI(TAG, "Initializing jog wheel controller...");
+    jog_config_t jog_cfg = jog_wheel_get_default_config();
+    jog_cfg.sensitivity.scratch_sensitivity = 1.0f;
+    jog_cfg.sensitivity.nudge_sensitivity = 1.0f;
+    // Apply jog sensitivity from preferences
+    jog_cfg.sensitivity.scratch_sensitivity = (float)prefs_get_jog_sensitivity() / 5.0f;
+    jog_cfg.sensitivity.nudge_sensitivity = (float)prefs_get_jog_sensitivity() / 5.0f;
+    jog_cfg.slip_mode_integration = true;  // Auto-trigger slip on scratch
+    if (!jog_wheel_init(&jog_cfg)) {
+        ESP_LOGW(TAG, "Jog wheel initialization failed - continuing anyway");
+    } else {
+        ESP_LOGI(TAG, "Jog wheel controller initialized");
+    }
+
+    // Initialize LED controller (after display)
+    ESP_LOGI(TAG, "Initializing LED controller...");
+    if (!led_controller_init()) {
+        ESP_LOGW(TAG, "LED controller initialization failed - continuing anyway");
+    } else {
+        // Apply brightness from preferences
+        led_controller_set_brightness(prefs_get_brightness());
+        ESP_LOGI(TAG, "LED controller initialized");
+    }
+
+    // Initialize external controller system (HID/MIDI)
+    ESP_LOGI(TAG, "Initializing external controller system...");
+    if (!ext_controller_init()) {
+        ESP_LOGW(TAG, "External controller initialization failed - HID/MIDI disabled");
+    } else {
+        ESP_LOGI(TAG, "External controller system initialized");
+    }
+
+    // Initialize master output recorder (depends on storage)
+    ESP_LOGI(TAG, "Initializing master recorder...");
+    if (!recorder_init()) {
+        ESP_LOGW(TAG, "Recorder initialization failed - recording unavailable");
+    } else {
+        ESP_LOGI(TAG, "Master recorder initialized");
     }
 
           // Initialize display (required for UI)
@@ -545,10 +659,20 @@ void app_main(void)
 
     
 
+        // Initialize Auto-DJ system (depends on track database)
+        ESP_LOGI(TAG, "Initializing Auto-DJ system...");
+        if (!auto_dj_init()) {
+            ESP_LOGW(TAG, "Auto-DJ initialization failed - auto-mixing unavailable");
+        } else {
+            // Load configuration from preferences
+            auto_dj_config_t adj_config;
+            auto_dj_get_default_config(&adj_config);
+            auto_dj_set_config(&adj_config);
+            ESP_LOGI(TAG, "Auto-DJ system initialized");
+        }
+
         // Initialize UI system (only if display is initialized)
-
         if (display_ok) {
-
             ESP_LOGI(TAG, "Initializing UI system...");
 
             ESP_LOGI(TAG, "UI dimensions: %dx%d", DISPLAY_WIDTH, DISPLAY_HEIGHT);
@@ -670,8 +794,22 @@ void app_main(void)
         // Update controls (buttons, encoders)
         controls_update();
         
+        // Update jog wheel controller
+        jog_wheel_update();
+        
         // Update pitch control
         pitch_control_update();
+        
+        // Update slip mode background timeline
+        slip_mode_update();
+        
+        // Update LED controller (animations, beat sync)
+        led_controller_update();
+        
+        // Update Auto-DJ (if enabled)
+        if (auto_dj_is_enabled()) {
+            auto_dj_update();
+        }
         
         // Update audio player
         audio_player_update();

@@ -36,6 +36,7 @@
 #include "metadata_format.h"
 #include "analyzer.h"
 #include "cue_points.h"
+#include "waveform.h"
 
 static const char *TAG = "audio_player";
 
@@ -220,6 +221,9 @@ static bool internal_load(const char *filepath) {
         // Use metadata for duration
         total_duration_seconds = current_metadata.duration_ms / 1000;
         duration_calculated = true;
+        
+        // Sync cue points to waveform display
+        cue_points_sync_to_waveform(current_metadata.duration_ms);
     } else {
         ESP_LOGW(TAG, "No ODK metadata, starting analyzer...");
         // Will start analyzer after file is opened

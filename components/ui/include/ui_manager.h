@@ -18,9 +18,10 @@ extern "C" {
  * @brief UI view types
  */
 typedef enum {
-    UI_VIEW_WAVEFORM = 0,  ///< Main playback view with waveform
+    UI_VIEW_WAVEFORM = 0,   ///< Main playback view with waveform
     UI_VIEW_CRATE,          ///< Library browser
-    UI_VIEW_SETTINGS        ///< Settings menu
+    UI_VIEW_SETTINGS,       ///< Settings menu
+    UI_VIEW_PERFORMANCE     ///< Performance mode (simplified, large waveform)
 } ui_view_type_t;
 
 /**
@@ -171,6 +172,28 @@ void ui_manager_set_waveform_resolution(int divider);
  * @return Current resolution divider (1-8)
  */
 int ui_manager_get_waveform_resolution(void);
+
+/**
+ * @brief Enter performance mode
+ * 
+ * Switches to simplified performance UI with maximized waveform
+ * and essential controls only. Optimized for live DJ use.
+ */
+void ui_manager_enter_performance_mode(void);
+
+/**
+ * @brief Exit performance mode
+ * 
+ * Returns to normal waveform view with full UI elements.
+ */
+void ui_manager_exit_performance_mode(void);
+
+/**
+ * @brief Check if performance mode is active
+ * 
+ * @return true if in performance mode
+ */
+bool ui_manager_is_performance_mode(void);
 
 #ifdef __cplusplus
 }

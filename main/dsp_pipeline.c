@@ -690,31 +690,42 @@ void dsp_pipeline_process_float(dsp_pipeline_t *pipeline,
     
     xSemaphoreTake(pipeline->mutex, portMAX_DELAY);
     
-    // Process through effect chain in order
+    // Process effects in fixed order: Filter → EQ → Echo → Limiter
+    // This ensures consistent signal flow regardless of slot assignment
+    
+    // Stage 1: Process all FILTER effects (bypassed ones are skipped)
     for (int i = 0; i < DSP_MAX_EFFECTS; i++) {
         dsp_effect_slot_t *slot = &pipeline->effects[i];
-        
-        if (!slot->active || slot->config.bypass) continue;
-        
-        switch (slot->config.type) {
-            case DSP_EFFECT_FILTER:
-                process_effect_filter(slot, samples_l, samples_r, num_frames, pipeline->sample_rate);
-                break;
-            case DSP_EFFECT_EQ:
-                process_effect_eq(slot, samples_l, samples_r, num_frames, pipeline->sample_rate);
-                break;
-            case DSP_EFFECT_ECHO:
-                process_effect_echo(slot, samples_l, samples_r, num_frames, pipeline->sample_rate);
-                break;
-            case DSP_EFFECT_LIMITER:
-                process_effect_limiter(slot, samples_l, samples_r, num_frames, pipeline->sample_rate);
-                break;
-            default:
-                break;
+        if (slot->active && !slot->config.bypass && slot->config.type == DSP_EFFECT_FILTER) {
+            process_effect_filter(slot, samples_l, samples_r, num_frames, pipeline->sample_rate);
         }
     }
     
-    // Apply master limiter at end of chain
+    // Stage 2: Process all EQ effects
+    for (int i = 0; i < DSP_MAX_EFFECTS; i++) {
+        dsp_effect_slot_t *slot = &pipeline->effects[i];
+        if (slot->active && !slot->config.bypass && slot->config.type == DSP_EFFECT_EQ) {
+            process_effect_eq(slot, samples_l, samples_r, num_frames, pipeline->sample_rate);
+        }
+    }
+    
+    // Stage 3: Process all ECHO effects
+    for (int i = 0; i < DSP_MAX_EFFECTS; i++) {
+        dsp_effect_slot_t *slot = &pipeline->effects[i];
+        if (slot->active && !slot->config.bypass && slot->config.type == DSP_EFFECT_ECHO) {
+            process_effect_echo(slot, samples_l, samples_r, num_frames, pipeline->sample_rate);
+        }
+    }
+    
+    // Stage 4: Process per-slot LIMITER effects (before master limiter)
+    for (int i = 0; i < DSP_MAX_EFFECTS; i++) {
+        dsp_effect_slot_t *slot = &pipeline->effects[i];
+        if (slot->active && !slot->config.bypass && slot->config.type == DSP_EFFECT_LIMITER) {
+            process_effect_limiter(slot, samples_l, samples_r, num_frames, pipeline->sample_rate);
+        }
+    }
+    
+    // Stage 5: Apply master limiter at end of chain (prevents clipping)
     if (pipeline->master_limiter.enabled) {
         process_master_limiter(pipeline, samples_l, samples_r, num_frames);
     }

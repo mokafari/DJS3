@@ -206,6 +206,30 @@ uint16_t cue_points_cycle_color(uint8_t cue_index);
  */
 uint8_t cue_points_get_active_count(void);
 
+/**
+ * @brief Get preview return position (for PREVIEW mode)
+ * 
+ * @return Position to return to when cue is released
+ */
+uint32_t cue_points_get_preview_return_position(void);
+
+/**
+ * @brief Check if preview mode is active
+ * 
+ * @return true if a cue is being previewed
+ */
+bool cue_points_is_preview_active(void);
+
+/**
+ * @brief Sync all active cue points to waveform display markers
+ * 
+ * Updates waveform markers to reflect current cue point state.
+ * Call this after loading a track or modifying cue points.
+ * 
+ * @param track_duration_ms Track duration in milliseconds (for position scaling)
+ */
+void cue_points_sync_to_waveform(uint32_t track_duration_ms);
+
 #ifdef __cplusplus
 }
 #endif

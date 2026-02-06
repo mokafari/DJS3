@@ -10,6 +10,7 @@
 #include "cue_points.h"
 #include "metadata.h"
 #include "metadata_format.h"
+#include "waveform.h"
 #include "esp_log.h"
 #include <string.h>
 #include <sys/stat.h>
@@ -94,6 +95,9 @@ bool cue_points_set_ms(uint8_t cue_index, uint32_t position_ms) {
     ESP_LOGI(TAG, "Cue %d set at %u ms (color: 0x%04X)", 
              cue_index, position_ms, cue_points[cue_index].color_rgb565);
     
+    // Update waveform marker
+    waveform_add_cue_marker(cue_index, position_ms / 1000, cue_points[cue_index].color_rgb565);
+    
     // Persist to metadata
     cue_points_save();
     
@@ -153,8 +157,9 @@ void cue_points_set_color(uint8_t cue_index, uint16_t color) {
     }
     cue_points[cue_index].color_rgb565 = color;
     
-    // Persist if cue is set
+    // Update waveform marker color if cue is active
     if (cue_points[cue_index].active) {
+        waveform_add_cue_marker(cue_index, cue_points[cue_index].position_ms / 1000, color);
         cue_points_save();
     }
 }
@@ -173,6 +178,9 @@ void cue_points_clear(uint8_t cue_index) {
     
     ESP_LOGI(TAG, "Cue %d cleared", cue_index);
     
+    // Remove waveform marker
+    waveform_remove_cue_marker(cue_index);
+    
     // Persist change
     cue_points_save();
 }
@@ -185,6 +193,9 @@ void cue_points_clear_all(void) {
         cue_points[i].active = 0;
         cue_points[i].position_ms = 0;
     }
+    
+    // Clear all waveform markers
+    waveform_clear_cue_markers();
     
     ESP_LOGI(TAG, "All cue points cleared");
     
@@ -404,4 +415,46 @@ uint8_t cue_points_get_active_count(void) {
         }
     }
     return count;
+}
+
+/**
+ * @brief Get preview return position
+ */
+uint32_t cue_points_get_preview_return_position(void) {
+    return s_preview_return_position;
+}
+
+/**
+ * @brief Check if preview mode is active
+ */
+bool cue_points_is_preview_active(void) {
+    return s_preview_active;
+}
+
+/**
+ * @brief Sync all cue points to waveform display
+ * 
+ * Updates waveform markers with current cue point positions and colors.
+ */
+void cue_points_sync_to_waveform(uint32_t track_duration_ms) {
+    // Clear existing markers
+    waveform_clear_cue_markers();
+    
+    if (track_duration_ms == 0) {
+        ESP_LOGW(TAG, "Cannot sync cue markers: track duration is 0");
+        return;
+    }
+    
+    // Add markers for active cue points
+    int synced = 0;
+    for (int i = 0; i < MAX_CUE_POINTS; i++) {
+        if (cue_points[i].active) {
+            // Convert ms position to seconds for waveform API
+            uint32_t position_sec = cue_points[i].position_ms / 1000;
+            waveform_add_cue_marker(i, position_sec, cue_points[i].color_rgb565);
+            synced++;
+        }
+    }
+    
+    ESP_LOGI(TAG, "Synced %d cue markers to waveform", synced);
 }

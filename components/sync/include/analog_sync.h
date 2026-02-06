@@ -65,6 +65,48 @@ typedef enum {
 } analog_sync_led_state_t;
 
 /**
+ * @brief PLL bandwidth presets for drift correction
+ */
+typedef enum {
+    ANALOG_SYNC_PLL_TIGHT = 0,   ///< Fast tracking, more jitter (live performance)
+    ANALOG_SYNC_PLL_NORMAL,      ///< Balanced tracking/stability (default)
+    ANALOG_SYNC_PLL_SMOOTH       ///< Slow tracking, stable tempo (studio sync)
+} analog_sync_pll_bandwidth_t;
+
+/**
+ * @brief Thread-safe session state snapshot
+ * 
+ * Use analog_sync_capture_state() to get a consistent snapshot for
+ * timing-critical audio operations.
+ */
+typedef struct {
+    float bpm;                   ///< Current tempo in BPM
+    float phase;                 ///< Phase within beat (0.0 to 1.0)
+    double beat;                 ///< Current beat position (fractional)
+    double bar_phase;            ///< Phase within bar/quantum (0.0 to quantum)
+    uint32_t pulse_count;        ///< Total pulse count since start
+    int64_t time_us;             ///< Timestamp of this snapshot
+    int64_t next_pulse_time_us;  ///< Predicted time of next pulse
+    int64_t next_beat_time_us;   ///< Predicted time of next beat boundary
+    bool is_running;             ///< Transport running state
+    bool is_locked;              ///< Clock lock state (slave mode)
+    float drift_ppb;             ///< Measured clock drift in parts per billion
+} analog_sync_state_t;
+
+/**
+ * @brief Drift correction statistics
+ */
+typedef struct {
+    float drift_ppb;             ///< Current drift in parts per billion
+    float drift_ppm;             ///< Current drift in parts per million
+    float avg_period_us;         ///< Average measured period
+    float jitter_us;             ///< Estimated jitter (std dev)
+    uint32_t total_pulses;       ///< Total pulses received
+    uint32_t glitch_count;       ///< Number of rejected outliers
+    int64_t lock_time_us;        ///< Time when clock locked
+} analog_sync_drift_stats_t;
+
+/**
  * @brief Pin configuration for DIN sync
  */
 typedef struct {
@@ -306,6 +348,181 @@ analog_sync_led_state_t analog_sync_get_led_state(const analog_sync_t *sync);
  * @param sync Analog sync handle
  */
 void analog_sync_tick(analog_sync_t *sync);
+
+// ============================================================================
+// Phase alignment and drift correction
+// ============================================================================
+
+/**
+ * @brief Set quantum for bar/phrase alignment
+ * 
+ * Quantum defines the number of beats for phase quantization,
+ * similar to Ableton Link. Default is 4.0 (one bar in 4/4 time).
+ * 
+ * @param sync Analog sync handle
+ * @param quantum Quantum in beats (e.g., 4.0 for one bar)
+ */
+void analog_sync_set_quantum(analog_sync_t *sync, float quantum);
+
+/**
+ * @brief Get current quantum
+ * 
+ * @param sync Analog sync handle
+ * @return Quantum in beats
+ */
+float analog_sync_get_quantum(const analog_sync_t *sync);
+
+/**
+ * @brief Set PLL bandwidth for drift correction
+ * 
+ * Controls how quickly the slave mode tracks tempo changes vs.
+ * how much it filters out jitter. Lower bandwidth = smoother but
+ * slower tracking.
+ * 
+ * @param sync Analog sync handle
+ * @param bandwidth PLL bandwidth preset
+ */
+void analog_sync_set_pll_bandwidth(analog_sync_t *sync, 
+                                    analog_sync_pll_bandwidth_t bandwidth);
+
+/**
+ * @brief Get current PLL bandwidth setting
+ * 
+ * @param sync Analog sync handle
+ * @return Current bandwidth preset
+ */
+analog_sync_pll_bandwidth_t analog_sync_get_pll_bandwidth(const analog_sync_t *sync);
+
+/**
+ * @brief Force phase alignment to quantum boundary
+ * 
+ * Aligns the internal phase counter to the nearest quantum boundary.
+ * Useful for syncing to downbeat after transport start.
+ * 
+ * @param sync Analog sync handle
+ */
+void analog_sync_align_to_quantum(analog_sync_t *sync);
+
+/**
+ * @brief Request beat at specific time
+ * 
+ * In master mode, adjusts timing so the specified beat occurs at 
+ * the given time. Useful for syncing to external events.
+ * 
+ * @param sync Analog sync handle
+ * @param beat Desired beat number
+ * @param time_us Target time in microseconds
+ */
+void analog_sync_request_beat_at_time(analog_sync_t *sync, 
+                                       double beat, 
+                                       int64_t time_us);
+
+// ============================================================================
+// Thread-safe state capture (for audio callbacks)
+// ============================================================================
+
+/**
+ * @brief Capture current state snapshot (thread-safe)
+ * 
+ * Returns a consistent snapshot of the sync state for use in
+ * timing-critical audio callbacks. Safe to call from ISR context.
+ * 
+ * @param sync Analog sync handle
+ * @param state Output state structure
+ */
+void analog_sync_capture_state(const analog_sync_t *sync, 
+                                analog_sync_state_t *state);
+
+/**
+ * @brief Get beat at specific time
+ * 
+ * Calculates the beat position at a given time, accounting for 
+ * current tempo and phase.
+ * 
+ * @param sync Analog sync handle
+ * @param time_us Time in microseconds
+ * @return Beat position (fractional)
+ */
+double analog_sync_beat_at_time(const analog_sync_t *sync, int64_t time_us);
+
+/**
+ * @brief Get phase at specific time
+ * 
+ * Calculates the phase within quantum at a given time.
+ * 
+ * @param sync Analog sync handle
+ * @param time_us Time in microseconds
+ * @return Phase within quantum (0.0 to quantum)
+ */
+double analog_sync_phase_at_time(const analog_sync_t *sync, int64_t time_us);
+
+/**
+ * @brief Get time at specific beat
+ * 
+ * Calculates when a specific beat will occur.
+ * 
+ * @param sync Analog sync handle
+ * @param beat Beat position
+ * @return Time in microseconds
+ */
+int64_t analog_sync_time_at_beat(const analog_sync_t *sync, double beat);
+
+/**
+ * @brief Get time of next beat boundary
+ * 
+ * @param sync Analog sync handle
+ * @return Time of next beat in microseconds
+ */
+int64_t analog_sync_next_beat_time(const analog_sync_t *sync);
+
+/**
+ * @brief Get time of next quantum boundary
+ * 
+ * @param sync Analog sync handle  
+ * @return Time of next quantum (bar) boundary in microseconds
+ */
+int64_t analog_sync_next_quantum_time(const analog_sync_t *sync);
+
+// ============================================================================
+// Drift correction and diagnostics
+// ============================================================================
+
+/**
+ * @brief Get drift correction statistics
+ * 
+ * Returns detailed statistics about clock drift, jitter, and
+ * lock quality for diagnostics and monitoring.
+ * 
+ * @param sync Analog sync handle
+ * @param stats Output statistics structure
+ */
+void analog_sync_get_drift_stats(const analog_sync_t *sync,
+                                  analog_sync_drift_stats_t *stats);
+
+/**
+ * @brief Reset drift correction statistics
+ * 
+ * Clears accumulated drift statistics. Useful after
+ * changing sync source or configuration.
+ * 
+ * @param sync Analog sync handle
+ */
+void analog_sync_reset_drift_stats(analog_sync_t *sync);
+
+/**
+ * @brief Get diagnostics (legacy API)
+ * 
+ * @param sync Analog sync handle
+ * @param bpm_out Output BPM (NULL to skip)
+ * @param pulse_count_out Output pulse count (NULL to skip)
+ * @param phase_out Output phase (NULL to skip)
+ * @param locked_out Output lock state (NULL to skip)
+ */
+void analog_sync_get_diagnostics(const analog_sync_t *sync,
+                                  float *bpm_out,
+                                  uint32_t *pulse_count_out,
+                                  float *phase_out,
+                                  bool *locked_out);
 
 #ifdef __cplusplus
 }
