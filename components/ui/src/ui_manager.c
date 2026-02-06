@@ -233,6 +233,11 @@ void ui_manager_set_view(ui_view_type_t view) {
         case UI_VIEW_SETTINGS:
             settings_view_show();
             break;
+        case UI_VIEW_PERFORMANCE:
+            // Performance mode uses waveform view with different styling
+            waveform_view_show();
+            s_performance_mode = true;
+            break;
     }
     
     ESP_LOGI(TAG, "UI view changed to %d", view);
