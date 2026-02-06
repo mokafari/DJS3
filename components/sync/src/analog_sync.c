@@ -1325,7 +1325,6 @@ void analog_sync_capture_state(const analog_sync_t *sync,
     // Calculate predicted times
     if (state->bpm > 0) {
         uint64_t period_us = bpm_to_period_us(state->bpm);
-        (void)period_us; // Used below
         
         // Time since last pulse
         uint64_t since_last_pulse = 0;
