@@ -1,12 +1,13 @@
 /**
  * @file filter.h
- * @brief DJ-style 3-band EQ/Isolator with soft limiting
+ * @brief Resonant biquad filter with high-pass and low-pass modes
  * 
- * Provides a classic DJ mixer-style 3-band EQ with:
- * - Low shelf filter at 200Hz
- * - Mid peaking filter at 1kHz  
- * - High shelf filter at 5kHz
- * - Polynomial soft limiter for tube-like saturation
+ * Implements a DJ-style resonant filter with:
+ * - Switchable low-pass / high-pass modes
+ * - Cutoff frequency: 20Hz - 20kHz
+ * - Resonance (Q factor): 0.5 - 20.0
+ * - Direct Form II Transposed biquad for stability
+ * - Optimized for ESP32 float operations
  */
 
 #ifndef FILTER_H
@@ -22,83 +23,142 @@ extern "C" {
 #endif
 
 /**
- * @brief DJ EQ state (3-band isolator)
+ * @brief Filter mode (low-pass or high-pass)
+ */
+typedef enum {
+    FILTER_MODE_LOWPASS = 0,    /**< Low-pass filter - cuts highs */
+    FILTER_MODE_HIGHPASS = 1    /**< High-pass filter - cuts lows */
+} filter_mode_t;
+
+/**
+ * @brief Biquad filter state for one channel
  * 
- * Contains biquad filter coefficients and delay lines for stereo processing.
- * Gains map from -1.0 (kill/mute) to 1.0 (boost).
+ * Uses Direct Form II Transposed for numerical stability:
+ *   y[n] = b0*x[n] + z1
+ *   z1   = b1*x[n] - a1*y[n] + z2
+ *   z2   = b2*x[n] - a2*y[n]
  */
 typedef struct {
-    // Biquad coefficients [b0, b1, b2, a1, a2]
-    float coeffs_low[5];
-    float coeffs_mid[5];
-    float coeffs_high[5];
-    
-    // Delay lines for L/R channels (2 samples each for biquad)
-    float w_low_l[2], w_low_r[2];
-    float w_mid_l[2], w_mid_r[2];
-    float w_high_l[2], w_high_r[2];
-    
-    // Gain controls: -1.0 (kill) to 1.0 (boost)
-    // -1.0 = mute, 0.0 = unity, 1.0 = +6dB boost
-    float gain_low;
-    float gain_mid;
-    float gain_high;
-    
-    uint32_t sample_rate;
-    bool enabled;
-} dj_eq_t;
+    float z1;   /**< Delay element 1 */
+    float z2;   /**< Delay element 2 */
+} biquad_state_t;
 
 /**
- * @brief Initialize DJ EQ with default settings
+ * @brief Resonant filter instance
+ */
+typedef struct {
+    // Biquad coefficients (normalized: a0 = 1.0)
+    float b0, b1, b2;   /**< Feedforward coefficients */
+    float a1, a2;       /**< Feedback coefficients (negated for efficiency) */
+    
+    // Per-channel state
+    biquad_state_t state_l; /**< Left channel state */
+    biquad_state_t state_r; /**< Right channel state */
+    
+    // Parameters
+    float cutoff_hz;        /**< Cutoff frequency in Hz */
+    float resonance;        /**< Resonance / Q factor */
+    filter_mode_t mode;     /**< Filter mode (LP/HP) */
+    uint32_t sample_rate;   /**< Sample rate in Hz */
+    
+    bool enabled;           /**< Enable/bypass flag */
+    bool coeffs_dirty;      /**< Coefficients need recalculation */
+} resonant_filter_t;
+
+/**
+ * @brief Initialize resonant filter
  * 
- * @param eq Pointer to EQ state structure
+ * Sets up filter with default parameters:
+ * - Mode: Low-pass
+ * - Cutoff: 1000 Hz
+ * - Resonance: 0.707 (Butterworth)
+ * 
+ * @param filter Pointer to filter instance
  * @param sample_rate Audio sample rate (e.g., 44100)
  */
-void dj_eq_init(dj_eq_t *eq, uint32_t sample_rate);
+void filter_init(resonant_filter_t *filter, uint32_t sample_rate);
 
 /**
- * @brief Set EQ band gains
+ * @brief Set filter cutoff frequency
  * 
- * @param eq Pointer to EQ state
- * @param low  Low band gain (-1.0 to 1.0)
- * @param mid  Mid band gain (-1.0 to 1.0)
- * @param high High band gain (-1.0 to 1.0)
- * 
- * Example:
- *     dj_eq_set_gains(&eq, -1.0f, 1.0f, 0.0f);  // Kill bass, boost mids
+ * @param filter Pointer to filter instance
+ * @param cutoff_hz Cutoff frequency (20.0 - 20000.0 Hz)
  */
-void dj_eq_set_gains(dj_eq_t *eq, float low, float mid, float high);
+void filter_set_cutoff(resonant_filter_t *filter, float cutoff_hz);
 
 /**
- * @brief Enable or disable EQ processing
+ * @brief Set filter resonance (Q factor)
  * 
- * @param eq Pointer to EQ state
+ * Higher values create a resonant peak at the cutoff frequency.
+ * Values above ~10 can cause self-oscillation.
+ * 
+ * @param filter Pointer to filter instance
+ * @param resonance Q factor (0.5 - 20.0, 0.707 = Butterworth)
+ */
+void filter_set_resonance(resonant_filter_t *filter, float resonance);
+
+/**
+ * @brief Set filter mode (low-pass or high-pass)
+ * 
+ * @param filter Pointer to filter instance
+ * @param mode FILTER_MODE_LOWPASS or FILTER_MODE_HIGHPASS
+ */
+void filter_set_mode(resonant_filter_t *filter, filter_mode_t mode);
+
+/**
+ * @brief Enable or disable filter processing
+ * 
+ * @param filter Pointer to filter instance
  * @param enabled True to enable, false to bypass
  */
-void dj_eq_set_enabled(dj_eq_t *eq, bool enabled);
+void filter_set_enabled(resonant_filter_t *filter, bool enabled);
 
 /**
- * @brief Process audio through EQ and soft limiter (IRAM optimized)
+ * @brief Process stereo audio through filter (in-place)
  * 
- * Applies 3-band EQ and polynomial soft limiter to stereo audio.
- * Uses static scratch buffer to avoid stack allocation.
+ * Processes stereo interleaved 16-bit PCM audio.
+ * Uses IRAM for hot loop optimization on ESP32.
  * 
- * @param eq      Pointer to EQ state
- * @param buffer  Stereo interleaved int16 buffer (modified in-place)
- * @param samples Number of stereo frames to process
+ * @param filter Pointer to filter instance
+ * @param buffer Stereo interleaved int16 buffer (modified in-place)
+ * @param num_frames Number of stereo frames to process
  * 
  * @note Thread Safety: Not thread-safe. Call from single audio task only.
  */
-void dj_eq_process(dj_eq_t *eq, int16_t *buffer, size_t samples);
+void filter_process(resonant_filter_t *filter, int16_t *buffer, size_t num_frames);
 
 /**
- * @brief Reset EQ filter state (clears delay lines)
+ * @brief Reset filter state (clears delay lines)
  * 
- * Call when switching tracks or seeking to prevent filter transients.
+ * Call when switching tracks or seeking to prevent transients.
  * 
- * @param eq Pointer to EQ state
+ * @param filter Pointer to filter instance
  */
-void dj_eq_reset(dj_eq_t *eq);
+void filter_reset(resonant_filter_t *filter);
+
+/**
+ * @brief Get current cutoff frequency
+ * 
+ * @param filter Pointer to filter instance
+ * @return Current cutoff in Hz
+ */
+float filter_get_cutoff(const resonant_filter_t *filter);
+
+/**
+ * @brief Get current resonance
+ * 
+ * @param filter Pointer to filter instance
+ * @return Current Q factor
+ */
+float filter_get_resonance(const resonant_filter_t *filter);
+
+/**
+ * @brief Get current filter mode
+ * 
+ * @param filter Pointer to filter instance
+ * @return Current mode (LP/HP)
+ */
+filter_mode_t filter_get_mode(const resonant_filter_t *filter);
 
 #ifdef __cplusplus
 }
