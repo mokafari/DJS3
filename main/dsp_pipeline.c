@@ -299,6 +299,30 @@ bool dsp_pipeline_init(dsp_pipeline_t *pipeline, uint32_t sample_rate) {
     
     pipeline->sample_rate = sample_rate;
     
+    // Allocate work buffers for real-time safe processing (no malloc in audio path)
+    pipeline->work_buffer_frames = DSP_MAX_FRAMES_PER_CALL;
+    pipeline->work_buffer_l = heap_caps_malloc(DSP_MAX_FRAMES_PER_CALL * sizeof(float),
+                                                MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    pipeline->work_buffer_r = heap_caps_malloc(DSP_MAX_FRAMES_PER_CALL * sizeof(float),
+                                                MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    
+    // Fallback to internal RAM if SPIRAM not available
+    if (!pipeline->work_buffer_l || !pipeline->work_buffer_r) {
+        if (pipeline->work_buffer_l) heap_caps_free(pipeline->work_buffer_l);
+        if (pipeline->work_buffer_r) heap_caps_free(pipeline->work_buffer_r);
+        
+        pipeline->work_buffer_l = malloc(DSP_MAX_FRAMES_PER_CALL * sizeof(float));
+        pipeline->work_buffer_r = malloc(DSP_MAX_FRAMES_PER_CALL * sizeof(float));
+        
+        if (!pipeline->work_buffer_l || !pipeline->work_buffer_r) {
+            ESP_LOGE(TAG, "Failed to allocate work buffers");
+            if (pipeline->work_buffer_l) free(pipeline->work_buffer_l);
+            if (pipeline->work_buffer_r) free(pipeline->work_buffer_r);
+            vSemaphoreDelete(pipeline->mutex);
+            return false;
+        }
+    }
+    
     // Configure default master limiter
     pipeline->master_limiter.enabled = true;
     pipeline->master_limiter.threshold = 0.95f;
