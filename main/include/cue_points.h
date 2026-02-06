@@ -4,6 +4,13 @@
  * 
  * Hot cue points are persisted to .odk metadata files so they
  * are restored automatically when a track is loaded.
+ * 
+ * Features:
+ * - 8 hot cue slots (0-7)
+ * - Cue+play mode (jump and start playback)
+ * - Delete cue functionality
+ * - Per-cue color customization
+ * - Automatic .odk persistence
  */
 
 #ifndef CUE_POINTS_H
@@ -17,7 +24,6 @@ extern "C" {
 #endif
 
 #define MAX_CUE_POINTS 8
-#define MAX_HOT_CUES 4
 
 // Default cue colors (RGB565)
 #define CUE_COLOR_RED    0xF800
@@ -28,6 +34,16 @@ extern "C" {
 #define CUE_COLOR_PURPLE 0xF81F
 #define CUE_COLOR_CYAN   0x07FF
 #define CUE_COLOR_WHITE  0xFFFF
+#define CUE_COLOR_PINK   0xF81F  // Same as purple, could customize
+
+/**
+ * @brief Hot cue trigger mode
+ */
+typedef enum {
+    CUE_MODE_JUMP = 0,      ///< Jump only (pauses if playing)
+    CUE_MODE_PLAY,          ///< Jump and start playback
+    CUE_MODE_PREVIEW        ///< Preview (play while held, return on release)
+} cue_trigger_mode_t;
 
 /**
  * @brief Initialize cue points for a track
