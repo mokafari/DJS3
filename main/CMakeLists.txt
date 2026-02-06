@@ -25,6 +25,8 @@ idf_component_register(
         "analysis_task.c"
         "track_history.c"
         "preferences.c"
+        # Slip Mode System
+        "slip_mode.c"
     INCLUDE_DIRS "include"
     REQUIRES driver nvs_flash esp_psram libhelix-mp3 fatfs usb ui timestretch esp_timer esp-dsp fx sync analysis playlist esp_adc
 )

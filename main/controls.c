@@ -43,6 +43,10 @@ static const int button_pins[BUTTON_COUNT] = {
     [BUTTON_HOT_CUE_2] = BUTTON_HOT_CUE_2_PIN,
     [BUTTON_HOT_CUE_3] = BUTTON_HOT_CUE_3_PIN,
     [BUTTON_HOT_CUE_4] = BUTTON_HOT_CUE_4_PIN,
+    [BUTTON_HOT_CUE_5] = BUTTON_HOT_CUE_5_PIN,
+    [BUTTON_HOT_CUE_6] = BUTTON_HOT_CUE_6_PIN,
+    [BUTTON_HOT_CUE_7] = BUTTON_HOT_CUE_7_PIN,
+    [BUTTON_HOT_CUE_8] = BUTTON_HOT_CUE_8_PIN,
 };
 
 static void IRAM_ATTR gpio_isr_handler(void* arg) {
