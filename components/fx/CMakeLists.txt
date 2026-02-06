@@ -5,6 +5,7 @@ idf_component_register(
         "src/delay.c"
         "src/reverb.c"
         "src/echo.c"
+        "src/eq.c"
     INCLUDE_DIRS 
         "include"
     PRIV_REQUIRES 

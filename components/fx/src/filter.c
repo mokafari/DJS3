@@ -2,12 +2,10 @@
  * @file filter.c
  * @brief Resonant biquad filter implementation
  * 
- * Implements Direct Form II Transposed biquad filter with:
- * - Low-pass and high-pass modes
- * - Resonance (Q factor) control
- * - Optimized for ESP32-S3 with IRAM placement
- * 
- * Cookbook reference: Audio EQ Cookbook by Robert Bristow-Johnson
+ * Implements DJ-style resonant filter with:
+ * - Direct Form II Transposed biquad for numerical stability
+ * - RBJ Audio EQ Cookbook coefficients
+ * - IRAM optimization for ESP32-S3
  */
 
 #include "filter.h"
@@ -18,73 +16,83 @@
 static const char *TAG = "filter";
 
 // Constants
+#define FILTER_CUTOFF_MIN    20.0f
+#define FILTER_CUTOFF_MAX    20000.0f
+#define FILTER_Q_MIN         0.5f
+#define FILTER_Q_MAX         20.0f
+#define FILTER_DEFAULT_CUTOFF 1000.0f
+#define FILTER_DEFAULT_Q     0.707107f  // Butterworth (1/sqrt(2))
+
 #ifndef M_PI
-#define M_PI 3.14159265358979323846f
+#define M_PI 3.14159265358979323846
 #endif
 
-// Parameter limits
-#define CUTOFF_MIN_HZ   20.0f
-#define CUTOFF_MAX_HZ   20000.0f
-#define RESONANCE_MIN   0.5f
-#define RESONANCE_MAX   20.0f
-#define RESONANCE_DEFAULT 0.707f  // Butterworth (no resonant peak)
-
-// Clamp helper
-static inline float clampf(float val, float min, float max) {
-    if (val < min) return min;
-    if (val > max) return max;
+/**
+ * @brief Clamp float value to range
+ */
+static inline float clampf(float val, float min_val, float max_val) {
+    if (val < min_val) return min_val;
+    if (val > max_val) return max_val;
     return val;
 }
 
 /**
- * @brief Calculate biquad coefficients for current parameters
+ * @brief Calculate biquad coefficients using RBJ Audio EQ Cookbook formulas
  * 
- * Uses Audio EQ Cookbook formulas for LPF/HPF.
- * Coefficients are normalized (a0 = 1.0).
+ * Reference: https://www.w3.org/2011/audio/audio-eq-cookbook.html
  */
-static void filter_calc_coefficients(resonant_filter_t *filter) {
-    if (!filter) return;
+static void filter_calculate_coefficients(resonant_filter_t *filter) {
+    if (!filter->coeffs_dirty) {
+        return;
+    }
     
-    // Clamp cutoff to Nyquist limit (with margin for stability)
-    float nyquist = (float)filter->sample_rate * 0.5f;
-    float fc = clampf(filter->cutoff_hz, CUTOFF_MIN_HZ, fminf(CUTOFF_MAX_HZ, nyquist * 0.95f));
-    float q = clampf(filter->resonance, RESONANCE_MIN, RESONANCE_MAX);
+    float fc = filter->cutoff_hz;
+    float Q = filter->resonance;
+    float fs = (float)filter->sample_rate;
     
-    // Pre-warp frequency for bilinear transform
-    float omega = 2.0f * M_PI * fc / (float)filter->sample_rate;
-    float sin_omega = sinf(omega);
-    float cos_omega = cosf(omega);
-    float alpha = sin_omega / (2.0f * q);
+    // Clamp frequency to valid range (leave headroom for stability)
+    fc = clampf(fc, FILTER_CUTOFF_MIN, fs * 0.45f);
+    
+    // Normalized frequency (0 to π)
+    float w0 = 2.0f * (float)M_PI * fc / fs;
+    float cos_w0 = cosf(w0);
+    float sin_w0 = sinf(w0);
+    float alpha = sin_w0 / (2.0f * Q);
     
     float b0, b1, b2, a0, a1, a2;
     
     if (filter->mode == FILTER_MODE_LOWPASS) {
-        // Low-pass filter coefficients
-        b0 = (1.0f - cos_omega) * 0.5f;
-        b1 = 1.0f - cos_omega;
-        b2 = (1.0f - cos_omega) * 0.5f;
+        // Low-pass filter coefficients (RBJ)
+        b0 = (1.0f - cos_w0) / 2.0f;
+        b1 = 1.0f - cos_w0;
+        b2 = (1.0f - cos_w0) / 2.0f;
         a0 = 1.0f + alpha;
-        a1 = -2.0f * cos_omega;
+        a1 = -2.0f * cos_w0;
         a2 = 1.0f - alpha;
     } else {
-        // High-pass filter coefficients
-        b0 = (1.0f + cos_omega) * 0.5f;
-        b1 = -(1.0f + cos_omega);
-        b2 = (1.0f + cos_omega) * 0.5f;
+        // High-pass filter coefficients (RBJ)
+        b0 = (1.0f + cos_w0) / 2.0f;
+        b1 = -(1.0f + cos_w0);
+        b2 = (1.0f + cos_w0) / 2.0f;
         a0 = 1.0f + alpha;
-        a1 = -2.0f * cos_omega;
+        a1 = -2.0f * cos_w0;
         a2 = 1.0f - alpha;
     }
     
-    // Normalize coefficients (divide by a0)
-    float a0_inv = 1.0f / a0;
-    filter->b0 = b0 * a0_inv;
-    filter->b1 = b1 * a0_inv;
-    filter->b2 = b2 * a0_inv;
-    filter->a1 = a1 * a0_inv;  // Note: stored as-is, negation in process loop
-    filter->a2 = a2 * a0_inv;
+    // Normalize by a0 (so a0 becomes 1.0)
+    float inv_a0 = 1.0f / a0;
+    filter->b0 = b0 * inv_a0;
+    filter->b1 = b1 * inv_a0;
+    filter->b2 = b2 * inv_a0;
+    filter->a1 = a1 * inv_a0;
+    filter->a2 = a2 * inv_a0;
     
     filter->coeffs_dirty = false;
+    
+    ESP_LOGD(TAG, "Filter coeffs: fc=%.1f Q=%.2f mode=%s",
+             fc, Q, filter->mode == FILTER_MODE_LOWPASS ? "LP" : "HP");
+    ESP_LOGD(TAG, "  b=[%.6f, %.6f, %.6f] a=[1, %.6f, %.6f]",
+             filter->b0, filter->b1, filter->b2, filter->a1, filter->a2);
 }
 
 void filter_init(resonant_filter_t *filter, uint32_t sample_rate) {
@@ -93,14 +101,14 @@ void filter_init(resonant_filter_t *filter, uint32_t sample_rate) {
     memset(filter, 0, sizeof(resonant_filter_t));
     
     filter->sample_rate = sample_rate;
-    filter->cutoff_hz = 1000.0f;
-    filter->resonance = RESONANCE_DEFAULT;
+    filter->cutoff_hz = FILTER_DEFAULT_CUTOFF;
+    filter->resonance = FILTER_DEFAULT_Q;
     filter->mode = FILTER_MODE_LOWPASS;
-    filter->enabled = true;
+    filter->enabled = false;  // Start bypassed
     filter->coeffs_dirty = true;
     
     // Calculate initial coefficients
-    filter_calc_coefficients(filter);
+    filter_calculate_coefficients(filter);
     
     ESP_LOGI(TAG, "Resonant filter initialized @ %lu Hz", (unsigned long)sample_rate);
 }
@@ -108,9 +116,10 @@ void filter_init(resonant_filter_t *filter, uint32_t sample_rate) {
 void filter_set_cutoff(resonant_filter_t *filter, float cutoff_hz) {
     if (!filter) return;
     
-    float clamped = clampf(cutoff_hz, CUTOFF_MIN_HZ, CUTOFF_MAX_HZ);
-    if (filter->cutoff_hz != clamped) {
-        filter->cutoff_hz = clamped;
+    cutoff_hz = clampf(cutoff_hz, FILTER_CUTOFF_MIN, FILTER_CUTOFF_MAX);
+    
+    if (filter->cutoff_hz != cutoff_hz) {
+        filter->cutoff_hz = cutoff_hz;
         filter->coeffs_dirty = true;
     }
 }
@@ -118,9 +127,10 @@ void filter_set_cutoff(resonant_filter_t *filter, float cutoff_hz) {
 void filter_set_resonance(resonant_filter_t *filter, float resonance) {
     if (!filter) return;
     
-    float clamped = clampf(resonance, RESONANCE_MIN, RESONANCE_MAX);
-    if (filter->resonance != clamped) {
-        filter->resonance = clamped;
+    resonance = clampf(resonance, FILTER_Q_MIN, FILTER_Q_MAX);
+    
+    if (filter->resonance != resonance) {
+        filter->resonance = resonance;
         filter->coeffs_dirty = true;
     }
 }
@@ -131,22 +141,110 @@ void filter_set_mode(resonant_filter_t *filter, filter_mode_t mode) {
     if (filter->mode != mode) {
         filter->mode = mode;
         filter->coeffs_dirty = true;
+        // Reset state to prevent transients when switching modes
+        filter_reset(filter);
     }
 }
 
 void filter_set_enabled(resonant_filter_t *filter, bool enabled) {
     if (!filter) return;
+    
+    if (!filter->enabled && enabled) {
+        // Enabling - clear state to prevent transients
+        filter_reset(filter);
+    }
     filter->enabled = enabled;
+}
+
+/**
+ * @brief Process single sample through biquad filter (Direct Form II Transposed)
+ * 
+ * y[n] = b0*x[n] + z1
+ * z1   = b1*x[n] - a1*y[n] + z2
+ * z2   = b2*x[n] - a2*y[n]
+ */
+static inline float IRAM_ATTR biquad_process(
+    float x, 
+    biquad_state_t *state,
+    float b0, float b1, float b2,
+    float a1, float a2
+) {
+    // Output
+    float y = b0 * x + state->z1;
+    
+    // Update state
+    state->z1 = b1 * x - a1 * y + state->z2;
+    state->z2 = b2 * x - a2 * y;
+    
+    return y;
+}
+
+void IRAM_ATTR filter_process(resonant_filter_t *filter, int16_t *buffer, size_t num_frames) {
+    if (!filter || !buffer || num_frames == 0) {
+        return;
+    }
+    
+    // Bypass if disabled
+    if (!filter->enabled) {
+        return;
+    }
+    
+    // Recalculate coefficients if parameters changed
+    if (filter->coeffs_dirty) {
+        filter_calculate_coefficients(filter);
+    }
+    
+    // Cache coefficients for tight loop
+    const float b0 = filter->b0;
+    const float b1 = filter->b1;
+    const float b2 = filter->b2;
+    const float a1 = filter->a1;
+    const float a2 = filter->a2;
+    
+    // Scaling factors for int16 <-> float conversion
+    const float scale_in = 1.0f / 32768.0f;
+    const float scale_out = 32767.0f;
+    
+    // Local state pointers
+    biquad_state_t *state_l = &filter->state_l;
+    biquad_state_t *state_r = &filter->state_r;
+    
+    // Process stereo frames
+    for (size_t i = 0; i < num_frames; i++) {
+        size_t idx = i * 2;
+        
+        // Convert to float (-1.0 to 1.0)
+        float in_l = (float)buffer[idx] * scale_in;
+        float in_r = (float)buffer[idx + 1] * scale_in;
+        
+        // Apply biquad filter
+        float out_l = biquad_process(in_l, state_l, b0, b1, b2, a1, a2);
+        float out_r = biquad_process(in_r, state_r, b0, b1, b2, a1, a2);
+        
+        // Convert back to int16 with clamping
+        float val_l = out_l * scale_out;
+        float val_r = out_r * scale_out;
+        
+        // Clamp to int16 range
+        if (val_l > 32767.0f) val_l = 32767.0f;
+        else if (val_l < -32768.0f) val_l = -32768.0f;
+        
+        if (val_r > 32767.0f) val_r = 32767.0f;
+        else if (val_r < -32768.0f) val_r = -32768.0f;
+        
+        buffer[idx] = (int16_t)val_l;
+        buffer[idx + 1] = (int16_t)val_r;
+    }
 }
 
 void filter_reset(resonant_filter_t *filter) {
     if (!filter) return;
     
-    // Clear delay lines
-    filter->state_l.z1 = 0.0f;
-    filter->state_l.z2 = 0.0f;
-    filter->state_r.z1 = 0.0f;
-    filter->state_r.z2 = 0.0f;
+    // Clear delay line state
+    memset(&filter->state_l, 0, sizeof(biquad_state_t));
+    memset(&filter->state_r, 0, sizeof(biquad_state_t));
+    
+    ESP_LOGD(TAG, "Filter state reset");
 }
 
 float filter_get_cutoff(const resonant_filter_t *filter) {
@@ -159,107 +257,4 @@ float filter_get_resonance(const resonant_filter_t *filter) {
 
 filter_mode_t filter_get_mode(const resonant_filter_t *filter) {
     return filter ? filter->mode : FILTER_MODE_LOWPASS;
-}
-
-/**
- * @brief Process single sample through biquad (Direct Form II Transposed)
- * 
- * This form is preferred for floating-point because:
- * - Better numerical stability
- * - Lower noise accumulation
- * - Efficient for streaming (minimal state)
- * 
- * Equations:
- *   y[n] = b0*x[n] + z1
- *   z1   = b1*x[n] - a1*y[n] + z2
- *   z2   = b2*x[n] - a2*y[n]
- */
-static inline float IRAM_ATTR biquad_process_sample(
-    float x,
-    float b0, float b1, float b2,
-    float a1, float a2,
-    float *z1, float *z2
-) {
-    float y = b0 * x + *z1;
-    *z1 = b1 * x - a1 * y + *z2;
-    *z2 = b2 * x - a2 * y;
-    return y;
-}
-
-void IRAM_ATTR filter_process(resonant_filter_t *filter, int16_t *buffer, size_t num_frames) {
-    // Early exit checks
-    if (!filter || !buffer || num_frames == 0) {
-        return;
-    }
-    
-    // Bypass if disabled
-    if (!filter->enabled) {
-        return;
-    }
-    
-    // Recalculate coefficients if parameters changed
-    if (filter->coeffs_dirty) {
-        filter_calc_coefficients(filter);
-    }
-    
-    // Cache coefficients in local variables for speed
-    const float b0 = filter->b0;
-    const float b1 = filter->b1;
-    const float b2 = filter->b2;
-    const float a1 = filter->a1;
-    const float a2 = filter->a2;
-    
-    // Cache state pointers
-    float z1_l = filter->state_l.z1;
-    float z2_l = filter->state_l.z2;
-    float z1_r = filter->state_r.z1;
-    float z2_r = filter->state_r.z2;
-    
-    // Scaling factors
-    const float scale_in = 1.0f / 32768.0f;
-    const float scale_out = 32767.0f;
-    
-    // Process all frames
-    for (size_t i = 0; i < num_frames; i++) {
-        // Convert to float (normalized -1.0 to ~1.0)
-        float in_l = (float)buffer[i * 2] * scale_in;
-        float in_r = (float)buffer[i * 2 + 1] * scale_in;
-        
-        // Apply biquad filter (Direct Form II Transposed)
-        // Left channel
-        float out_l = b0 * in_l + z1_l;
-        z1_l = b1 * in_l - a1 * out_l + z2_l;
-        z2_l = b2 * in_l - a2 * out_l;
-        
-        // Right channel
-        float out_r = b0 * in_r + z1_r;
-        z1_r = b1 * in_r - a1 * out_r + z2_r;
-        z2_r = b2 * in_r - a2 * out_r;
-        
-        // Convert back to int16 with clipping
-        float val_l = out_l * scale_out;
-        float val_r = out_r * scale_out;
-        
-        // Clamp to int16 range (resonance can cause overshoot)
-        if (val_l > 32767.0f) val_l = 32767.0f;
-        else if (val_l < -32768.0f) val_l = -32768.0f;
-        if (val_r > 32767.0f) val_r = 32767.0f;
-        else if (val_r < -32768.0f) val_r = -32768.0f;
-        
-        buffer[i * 2] = (int16_t)val_l;
-        buffer[i * 2 + 1] = (int16_t)val_r;
-    }
-    
-    // Store state back (denormal protection)
-    // Flush very small values to zero to prevent denormal slowdown
-    const float denormal_threshold = 1e-20f;
-    if (fabsf(z1_l) < denormal_threshold) z1_l = 0.0f;
-    if (fabsf(z2_l) < denormal_threshold) z2_l = 0.0f;
-    if (fabsf(z1_r) < denormal_threshold) z1_r = 0.0f;
-    if (fabsf(z2_r) < denormal_threshold) z2_r = 0.0f;
-    
-    filter->state_l.z1 = z1_l;
-    filter->state_l.z2 = z2_l;
-    filter->state_r.z1 = z1_r;
-    filter->state_r.z2 = z2_r;
 }
