@@ -80,6 +80,17 @@ void ui_manager_update_waveform(const uint8_t *waveform_data,
 void ui_manager_reset_waveform(void);
 
 /**
+ * @brief Set the overview waveform for the track overview stripe
+ * 
+ * Called when a track with pre-analyzed metadata is loaded.
+ * Shows full track structure in the overview bar.
+ * 
+ * @param data Pointer to waveform peak data (0-255)
+ * @param size Number of samples (typically 480 for full width)
+ */
+void ui_manager_set_overview_waveform(const uint8_t *data, size_t size);
+
+/**
  * @brief Update telemetry (BPM, pitch, phase error)
  * 
  * @param bpm Current BPM

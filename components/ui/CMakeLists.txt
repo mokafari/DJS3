@@ -6,6 +6,7 @@ idf_component_register(
         "src/telemetry_view.c"
         "src/crate_view.c"
         "src/metadata_view.c"
+        "src/playlist_view.c"
         "src/lvgl_driver.c"
         "src/gt911.c"
     INCLUDE_DIRS 
@@ -16,5 +17,6 @@ idf_component_register(
     REQUIRES
         lvgl
         main
+        playlist
 )
 

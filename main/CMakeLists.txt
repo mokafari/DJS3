@@ -20,8 +20,10 @@ idf_component_register(
         "metadata.c"
         "analyzer.c"
         "library_db.c"
+        "playlist_manager.c"
+        "analysis_task.c"
     INCLUDE_DIRS "include"
-    REQUIRES driver nvs_flash esp_psram libhelix-mp3 fatfs usb ui timestretch esp_timer esp-dsp fx sync
+    REQUIRES driver nvs_flash esp_psram libhelix-mp3 fatfs usb ui timestretch esp_timer esp-dsp fx sync analysis playlist
 )
 
 # Set C standard

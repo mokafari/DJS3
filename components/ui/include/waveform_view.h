@@ -23,6 +23,17 @@ void waveform_view_show_cursor(float position, bool visible);
 void waveform_view_reset(void);
 
 /**
+ * @brief Set the overview waveform data for the track overview stripe
+ * 
+ * Called when a track is loaded with pre-analyzed waveform data.
+ * The overview shows the full track structure at the bottom of the waveform view.
+ * 
+ * @param data Pointer to waveform peak data (0-255, 480 points expected)
+ * @param size Number of samples in data array
+ */
+void waveform_view_set_overview(const uint8_t *data, size_t size);
+
+/**
  * @brief Set waveform resolution divider for performance tuning
  * 
  * Higher divider = fewer bars = better performance, lower detail
@@ -64,6 +75,18 @@ void waveform_view_get_perf_stats(uint32_t *frame_us, uint32_t *cache_us,
  * @brief Reset performance counters
  */
 void waveform_view_reset_perf(void);
+
+// ============================================================================
+// NUDGE ANIMATION API
+// ============================================================================
+
+/**
+ * @brief Trigger nudge animation (waveform jerks left then returns)
+ * 
+ * Called when jog wheel nudges playback. Provides visual feedback
+ * by briefly shifting the waveform left with ease-out decay.
+ */
+void waveform_view_trigger_nudge(void);
 
 #ifdef __cplusplus
 }

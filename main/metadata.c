@@ -10,6 +10,7 @@
 #include <sys/stat.h>
 #include <string.h>
 #include <stdio.h>
+#include <unistd.h>  // For unlink(), rename()
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -155,7 +156,38 @@ const char* metadata_get_base_dir(void) {
 }
 
 /**
- * @brief Save metadata for a track
+ * @brief Get .odk path for an MP3 file (alias for metadata_get_path)
+ */
+bool metadata_get_odk_path(const char *mp3_path, char *odk_path, size_t odk_path_len) {
+    return metadata_get_path(mp3_path, odk_path, odk_path_len);
+}
+
+/**
+ * @brief Create parent directories for a file path
+ * 
+ * Extracts directory portion from path and creates it recursively.
+ * 
+ * @param file_path Full path to a file (e.g., "/sdcard/.opendeck/Music/Track.odk")
+ */
+static void create_parent_dirs(const char *file_path) {
+    char dir_only[256];
+    strncpy(dir_only, file_path, sizeof(dir_only) - 1);
+    dir_only[sizeof(dir_only) - 1] = '\0';
+    
+    char *slash = strrchr(dir_only, '/');
+    if (slash) {
+        *slash = '\0';
+        mkdir_p(dir_only);
+    }
+}
+
+/**
+ * @brief Save metadata for a track (atomic write)
+ * 
+ * Uses atomic write pattern:
+ * 1. Write to .odk.tmp temporary file
+ * 2. Rename to .odk on success
+ * 3. This prevents corrupt files if power is lost mid-write
  */
 bool metadata_save(const char *mp3_path, const TrackMetadata_t *data) {
     // Lazy init and verify mutex exists
@@ -168,9 +200,14 @@ bool metadata_save(const char *mp3_path, const TrackMetadata_t *data) {
     }
     
     char odk_path[256];
+    char tmp_path[260];  // Extra room for ".tmp" suffix
+    
     if (!metadata_get_path(mp3_path, odk_path, sizeof(odk_path))) {
         return false;
     }
+    
+    // Build temp file path
+    snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", odk_path);
     
     // 1. Acquire lock (500ms timeout)
     if (xSemaphoreTake(file_lock, pdMS_TO_TICKS(500)) != pdTRUE) {
@@ -178,32 +215,34 @@ bool metadata_save(const char *mp3_path, const TrackMetadata_t *data) {
         return false;
     }
 
-    // 2. Ensure directory exists
-    char dir_only[256];
-    strcpy(dir_only, odk_path);
-    char *slash = strrchr(dir_only, '/');
-    if (slash) {
-        *slash = '\0';
-        mkdir_p(dir_only);
-    }
+    // 2. Ensure parent directories exist
+    create_parent_dirs(odk_path);
 
-    // 3. Write file
+    // 3. Write to temp file first (atomic write pattern)
     bool success = false;
-    FILE *f = fopen(odk_path, "wb");
+    FILE *f = fopen(tmp_path, "wb");
     if (f) {
         size_t written = fwrite(data, 1, sizeof(TrackMetadata_t), f);
+        fclose(f);
+        
         if (written == sizeof(TrackMetadata_t)) {
-            success = true;
-            ESP_LOGI(TAG, "Saved metadata: %s", odk_path);
+            // 4. Atomic rename: temp -> final
+            if (rename(tmp_path, odk_path) == 0) {
+                success = true;
+                ESP_LOGI(TAG, "Saved metadata: %s", odk_path);
+            } else {
+                ESP_LOGE(TAG, "Failed to rename %s -> %s", tmp_path, odk_path);
+                unlink(tmp_path);  // Clean up temp file
+            }
         } else {
             ESP_LOGE(TAG, "Write incomplete: %zu/%zu bytes", written, sizeof(TrackMetadata_t));
+            unlink(tmp_path);  // Clean up temp file
         }
-        fclose(f);
     } else {
-        ESP_LOGE(TAG, "Failed to open for writing: %s", odk_path);
+        ESP_LOGE(TAG, "Failed to open for writing: %s", tmp_path);
     }
 
-    // 4. Release lock
+    // 5. Release lock
     xSemaphoreGive(file_lock);
     return success;
 }

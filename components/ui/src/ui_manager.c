@@ -23,10 +23,6 @@ static ui_view_type_t s_current_view = UI_VIEW_WAVEFORM;
 static uint32_t s_width = 0;
 static uint32_t s_height = 0;
 
-// Animation state for nudge effect
-static bool nudge_animating = false;
-static int nudge_offset = 0;
-
 int ui_manager_init(uint32_t width, uint32_t height) {
     if (s_initialized) {
         ESP_LOGW(TAG, "UI already initialized");
@@ -124,6 +120,17 @@ void ui_manager_handle_crate_select(int index) {
             // Immediately update metadata with new track info
             metadata_view_update(info.title, "4A", 0, 0);
             
+            // Load overview waveform if metadata is available
+            // Note: audio_player_load is async, so metadata may not be immediately available
+            // The overview will be loaded in the main loop once metadata loads
+            static uint8_t overview_buffer[480];
+            if (audio_player_get_overview(overview_buffer, 480)) {
+                waveform_view_set_overview(overview_buffer, 480);
+                ESP_LOGI(TAG, "Overview waveform loaded from metadata");
+            } else {
+                ESP_LOGI(TAG, "No overview waveform available yet (will be generated)");
+            }
+            
             audio_player_play();
             // Switch back to waveform view after loading
             ui_manager_set_view(UI_VIEW_WAVEFORM);
@@ -192,6 +199,11 @@ void ui_manager_reset_waveform(void) {
     waveform_view_reset();
 }
 
+void ui_manager_set_overview_waveform(const uint8_t *data, size_t size) {
+    if (!s_initialized) return;
+    waveform_view_set_overview(data, size);
+}
+
 void ui_manager_update_telemetry(float bpm, float pitch, float phase_error) {
     if (!s_initialized) return;
     telemetry_view_update(bpm, pitch, phase_error);
@@ -226,18 +238,10 @@ void ui_manager_handle_touch(uint16_t x, uint16_t y, bool pressed) {
  * @brief Trigger nudge animation (waveform jerks left)
  */
 void ui_manager_trigger_nudge_animation(void) {
-    if (!s_initialized || nudge_animating) return;
+    if (!s_initialized) return;
     
-    nudge_animating = true;
-    nudge_offset = -10; // Jerk left 10px
-    
-    // TODO: Implement animation using LVGL animator
-    // For now, this is a placeholder
+    waveform_view_trigger_nudge();
     ESP_LOGI(TAG, "Nudge animation triggered");
-    
-    // Reset after animation
-    nudge_offset = 0;
-    nudge_animating = false;
 }
 
 void ui_manager_refresh_crate(void) {

@@ -6,6 +6,7 @@
 #include "waveform_view.h"
 #include "hud_theme.h"
 #include "lvgl_driver.h"
+#include "audio_player.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 #include "esp_timer.h"
@@ -88,8 +89,8 @@ static void perf_log_stats(void) {
 static lv_obj_t *waveform_container = NULL;
 static lv_obj_t *waveform_canvas = NULL;
 static lv_obj_t *playhead_line = NULL;
-static lv_obj_t *cursor_line = NULL;
-static lv_obj_t *grid_container = NULL;
+// static lv_obj_t *cursor_line = NULL;    // Reserved for touch feedback
+// static lv_obj_t *grid_container = NULL; // Reserved for beat grid overlay
 
 static uint32_t view_width = 0;
 static uint32_t view_height = 0;
@@ -104,10 +105,22 @@ static size_t last_wave_index = 0;
 static bool first_frame = true;
 #define SCROLL_DELTA_THRESHOLD 30  // Full redraw if scroll > 30 pixels
 
+// Nudge animation state
+static int nudge_offset_px = 0;           // Current pixel offset (decaying)
+static int64_t nudge_start_time = 0;      // When nudge started (microseconds)
+static const int NUDGE_AMOUNT_PX = 20;    // Max jerk distance in pixels
+static const int NUDGE_DURATION_MS = 100; // Animation duration
+
+// Forward declaration for nudge offset calculation
+static int calculate_nudge_offset(void);
+
 // Frame throttling - minimum pixels to scroll before update
 #define MIN_SCROLL_FOR_UPDATE 2    // Don't redraw for tiny movements
 static uint64_t last_draw_time_us = 0;
 #define MIN_FRAME_INTERVAL_US 25000  // Max ~40 FPS for waveform (save CPU)
+
+// Forward declaration
+static int calculate_nudge_offset(void);
 
 // Stable display cache - prevents past data from changing
 static uint8_t display_cache[WAVEFORM_BARS];
@@ -214,8 +227,11 @@ static void draw_waveform(const uint8_t *waveform_data, size_t num_samples, size
     uint64_t current_time = esp_timer_get_time();
     int preliminary_delta = (int)wave_index - (int)last_wave_index;
     
-    // Skip frame if: not first frame, small movement, and not enough time passed
-    if (!first_frame && preliminary_delta >= 0 && preliminary_delta < MIN_SCROLL_FOR_UPDATE) {
+    // Check if nudge animation is active (don't skip frames during animation)
+    bool nudge_active = (nudge_offset_px > 0);
+    
+    // Skip frame if: not first frame, small movement, not animating, and not enough time passed
+    if (!first_frame && !nudge_active && preliminary_delta >= 0 && preliminary_delta < MIN_SCROLL_FOR_UPDATE) {
         if ((current_time - last_draw_time_us) < MIN_FRAME_INTERVAL_US) {
 #if PERF_ENABLED
             perf_skip_draws++;
@@ -223,6 +239,9 @@ static void draw_waveform(const uint8_t *waveform_data, size_t num_samples, size
             return;  // Skip this frame
         }
     }
+    
+    // Force full redraw if nudge is animating (need to update all bar positions)
+    bool force_redraw_for_nudge = nudge_active;
     
 #if PERF_ENABLED
     uint64_t t_start = perf_get_time_us();
@@ -247,13 +266,16 @@ static void draw_waveform(const uint8_t *waveform_data, size_t num_samples, size
     lv_color_t bg_color = lv_color_black();
     int center_y = view_height / 2;
     
+    // Calculate nudge animation offset (jerks waveform left)
+    int nudge_x_offset = calculate_nudge_offset();
+    
     // Calculate effective bars based on resolution
     int effective_bars = WAVEFORM_BARS / resolution_divider;
     int bar_width = resolution_divider;  // Each bar spans this many pixels
     
     // Calculate scroll delta since last frame (in display cache units)
     int scroll_delta = 0;
-    bool need_full_redraw = first_frame;
+    bool need_full_redraw = first_frame || force_redraw_for_nudge;
     
     if (!first_frame) {
         scroll_delta = (int)wave_index - (int)last_wave_index;
@@ -298,9 +320,12 @@ static void draw_waveform(const uint8_t *waveform_data, size_t num_samples, size
                 if (y_start < 0) y_start = 0;
                 if (y_end >= (int)view_height) y_end = view_height - 1;
                 
-                int x_start = bar * bar_width;
+                // Apply nudge offset (shifts waveform left)
+                int x_start = bar * bar_width - nudge_x_offset;
                 int x_end = x_start + bar_width;
+                if (x_start < 0) x_start = 0;
                 if (x_end > (int)view_width) x_end = view_width;
+                if (x_start >= x_end) continue;  // Bar completely off-screen
                 
                 // Draw bar row by row for better cache behavior
                 for (int y = y_start; y <= y_end; y++) {
@@ -362,9 +387,12 @@ static void draw_waveform(const uint8_t *waveform_data, size_t num_samples, size
                 if (y_start < 0) y_start = 0;
                 if (y_end >= (int)view_height) y_end = view_height - 1;
                 
-                int x_start = bar * bar_width;
+                // Apply nudge offset (shifts waveform left)
+                int x_start = bar * bar_width - nudge_x_offset;
                 int x_end = x_start + bar_width;
+                if (x_start < 0) x_start = 0;
                 if (x_end > (int)view_width) x_end = view_width;
+                if (x_start >= x_end) continue;  // Bar completely off-screen
                 
                 // Draw bar row by row (cache-friendly)
                 for (int y = y_start; y <= y_end; y++) {
@@ -440,8 +468,119 @@ static void draw_waveform(const uint8_t *waveform_data, size_t num_samples, size
 #endif
 }
 
-static lv_obj_t *progress_bar_bg = NULL;
-static lv_obj_t *progress_bar_cursor = NULL;
+// Overview waveform stripe (bottom of waveform container)
+static lv_obj_t *overview_container = NULL;
+static lv_obj_t *overview_canvas = NULL;
+static lv_obj_t *overview_position_line = NULL;
+static uint8_t overview_waveform[WAVEFORM_BARS];
+static bool overview_valid = false;
+
+#define OVERVIEW_HEIGHT 20  // Height of overview stripe in pixels
+
+/**
+ * @brief Handle touch/click on overview bar for seek-to-position
+ * 
+ * When user taps the overview waveform stripe, seek to that position in the track.
+ */
+static void overview_click_handler(lv_event_t *e) {
+    lv_point_t point;
+    lv_indev_get_point(lv_indev_get_act(), &point);
+    
+    // Get the overview canvas object
+    lv_obj_t *target = lv_event_get_target(e);
+    
+    // Get absolute position of the overview canvas
+    lv_coord_t canvas_x = 0;
+    lv_obj_t *parent = target;
+    while (parent != NULL) {
+        canvas_x += lv_obj_get_x(parent);
+        parent = lv_obj_get_parent(parent);
+    }
+    
+    // Calculate local X coordinate relative to overview canvas
+    lv_coord_t local_x = point.x - canvas_x;
+    
+    // Calculate position as percentage (0.0 to 1.0)
+    float position = (float)local_x / (float)view_width;
+    
+    // Clamp to valid range
+    if (position < 0.0f) position = 0.0f;
+    if (position > 1.0f) position = 1.0f;
+    
+    ESP_LOGI(TAG, "Overview seek: touch_x=%d, local_x=%d, position=%.3f", 
+             point.x, local_x, position);
+    
+    // Seek audio using VBR-aware seek table
+    audio_player_seek_percent(position);
+    
+    // Update position indicator immediately for responsive feel
+    if (overview_position_line) {
+        int pos_x = (int)(position * (view_width - 2));
+        if (pos_x < 0) pos_x = 0;
+        if (pos_x > (int)(view_width - 2)) pos_x = view_width - 2;
+        lv_obj_set_x(overview_position_line, pos_x);
+    }
+    
+    // Force waveform to do a full redraw on next update (seek invalidates cache)
+    first_frame = true;
+    display_cache_valid = false;
+}
+
+/**
+ * @brief Draw the static overview waveform on the overview canvas
+ * 
+ * Called once when track loads (not every frame).
+ * Uses direct buffer access for performance.
+ */
+static void draw_overview_waveform(void) {
+    if (!overview_canvas || !overview_valid) return;
+    
+    lv_img_dsc_t *canvas_img = lv_canvas_get_img(overview_canvas);
+    if (!canvas_img) return;
+    lv_color_t *buffer = (lv_color_t *)canvas_img->data;
+    if (!buffer) return;
+    
+    lv_color_t fg_color = hud_theme_get_foreground_color();
+    lv_color_t bg_color = lv_color_black();
+    
+    // Dim the overview waveform slightly (50% brightness)
+    lv_color_t dim_fg = lv_color_make(
+        lv_color_brightness(fg_color) / 2,
+        lv_color_brightness(fg_color) / 2,
+        lv_color_brightness(fg_color) / 2
+    );
+    // Actually, use the same foreground but at lower opacity effect
+    dim_fg = lv_color_mix(fg_color, bg_color, 128); // 50% mix
+    
+    int center_y = OVERVIEW_HEIGHT / 2;
+    
+    // Clear buffer
+    size_t buffer_size = view_width * OVERVIEW_HEIGHT;
+    for (size_t i = 0; i < buffer_size; i++) {
+        buffer[i] = bg_color;
+    }
+    
+    // Draw overview waveform (1 pixel per sample)
+    for (int x = 0; x < (int)view_width && x < WAVEFORM_BARS; x++) {
+        uint8_t peak = overview_waveform[x];
+        if (peak > 0) {
+            // Scale peak to overview height
+            int bar_height = (peak * (OVERVIEW_HEIGHT - 2)) / 255;
+            if (bar_height < 1) bar_height = 1;
+            
+            int y_start = center_y - (bar_height / 2);
+            int y_end = center_y + (bar_height / 2);
+            if (y_start < 0) y_start = 0;
+            if (y_end >= OVERVIEW_HEIGHT) y_end = OVERVIEW_HEIGHT - 1;
+            
+            for (int y = y_start; y <= y_end; y++) {
+                buffer[y * view_width + x] = dim_fg;
+            }
+        }
+    }
+    
+    lv_obj_invalidate(overview_canvas);
+}
 
 void waveform_view_init(uint32_t width, uint32_t height) {
     ESP_LOGI(TAG, "Waveform view initialized: %ux%u", width, height);
@@ -507,28 +646,65 @@ void waveform_view_init(uint32_t width, uint32_t height) {
     
     // Create fixed playhead line (center, spans full container height)
     playhead_line = lv_obj_create(waveform_container);
-    lv_obj_set_size(playhead_line, 2, container_height);
+    lv_obj_set_size(playhead_line, 2, container_height - OVERVIEW_HEIGHT);
     lv_obj_set_pos(playhead_line, view_width / 2 - 1, 0);
     lv_obj_set_style_bg_color(playhead_line, hud_theme_get_foreground_color(), 0);
     lv_obj_set_style_bg_opa(playhead_line, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(playhead_line, 0, 0);
     lv_obj_clear_flag(playhead_line, LV_OBJ_FLAG_CLICKABLE);
     
-    // Progress Bar (bottom 4px of container) - amber fill bar showing track position
-    progress_bar_bg = lv_obj_create(waveform_container);
-    lv_obj_set_size(progress_bar_bg, view_width, 4);
-    lv_obj_set_align(progress_bar_bg, LV_ALIGN_BOTTOM_MID);
-    lv_obj_set_style_bg_color(progress_bar_bg, lv_color_black(), 0);
-    lv_obj_set_style_border_width(progress_bar_bg, 0, 0);
-    lv_obj_set_style_pad_all(progress_bar_bg, 0, 0);
-    lv_obj_clear_flag(progress_bar_bg, LV_OBJ_FLAG_SCROLLABLE);
+    // ========================================================================
+    // Overview Waveform Stripe (bottom of container)
+    // Shows full track structure with moving position indicator
+    // ========================================================================
+    overview_container = lv_obj_create(waveform_container);
+    lv_obj_set_size(overview_container, view_width, OVERVIEW_HEIGHT);
+    lv_obj_set_align(overview_container, LV_ALIGN_BOTTOM_MID);
+    lv_obj_set_style_bg_color(overview_container, lv_color_black(), 0);
+    lv_obj_set_style_border_width(overview_container, 0, 0);
+    lv_obj_set_style_pad_all(overview_container, 0, 0);
+    lv_obj_clear_flag(overview_container, LV_OBJ_FLAG_SCROLLABLE);
     
-    progress_bar_cursor = lv_obj_create(progress_bar_bg);
-    lv_obj_set_size(progress_bar_cursor, 0, 4); // Starts at 0 width, fills with progress
-    lv_obj_set_pos(progress_bar_cursor, 0, 0);
-    lv_obj_set_style_bg_color(progress_bar_cursor, hud_theme_get_foreground_color(), 0);
-    lv_obj_set_style_border_width(progress_bar_cursor, 0, 0);
-    lv_obj_set_style_radius(progress_bar_cursor, 0, 0);
+    // Create canvas for overview waveform
+    overview_canvas = lv_canvas_create(overview_container);
+    size_t overview_buf_size = view_width * OVERVIEW_HEIGHT * sizeof(lv_color_t);
+    ESP_LOGI(TAG, "Allocating overview canvas: %zu bytes", overview_buf_size);
+    
+    void *overview_buf = heap_caps_malloc(overview_buf_size, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!overview_buf) {
+        ESP_LOGW(TAG, "Internal RAM failed for overview, trying PSRAM...");
+        overview_buf = heap_caps_malloc(overview_buf_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    }
+    
+    if (overview_buf) {
+        lv_canvas_set_buffer(overview_canvas, overview_buf, view_width, OVERVIEW_HEIGHT, LV_IMG_CF_TRUE_COLOR);
+        lv_obj_set_size(overview_canvas, view_width, OVERVIEW_HEIGHT);
+        lv_obj_set_pos(overview_canvas, 0, 0);
+        lv_canvas_fill_bg(overview_canvas, lv_color_black(), LV_OPA_COVER);
+        
+        // Enable click events on overview canvas for seek-by-touch
+        lv_obj_add_flag(overview_canvas, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(overview_canvas, overview_click_handler, LV_EVENT_CLICKED, NULL);
+        
+        ESP_LOGI(TAG, "Overview canvas allocated at %p (touch-seek enabled)", overview_buf);
+    } else {
+        ESP_LOGE(TAG, "Failed to allocate overview canvas buffer");
+        lv_obj_del(overview_canvas);
+        overview_canvas = NULL;
+    }
+    
+    // Position indicator line (moves across overview)
+    overview_position_line = lv_obj_create(overview_container);
+    lv_obj_set_size(overview_position_line, 2, OVERVIEW_HEIGHT);
+    lv_obj_set_pos(overview_position_line, 0, 0);
+    lv_obj_set_style_bg_color(overview_position_line, hud_theme_get_foreground_color(), 0);
+    lv_obj_set_style_bg_opa(overview_position_line, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(overview_position_line, 0, 0);
+    lv_obj_clear_flag(overview_position_line, LV_OBJ_FLAG_CLICKABLE);
+    
+    // Initialize overview waveform data to zero
+    memset(overview_waveform, 0, sizeof(overview_waveform));
+    overview_valid = false;
     
     // Initially hidden
     lv_obj_add_flag(waveform_container, LV_OBJ_FLAG_HIDDEN);
@@ -541,12 +717,12 @@ void waveform_view_update(const uint8_t *waveform_data,
                          size_t wave_index) {
     if (!visible || !waveform_canvas) return;
     
-    // Update progress bar fill (position 0.0 to 1.0 = start to end of track)
-    if (progress_bar_cursor) {
-        int fill_width = (int)(position * view_width);
-        if (fill_width < 0) fill_width = 0;
-        if (fill_width > (int)view_width) fill_width = view_width;
-        lv_obj_set_width(progress_bar_cursor, fill_width);
+    // Update overview position indicator (position 0.0 to 1.0 = start to end)
+    if (overview_position_line) {
+        int pos_x = (int)(position * (view_width - 2));
+        if (pos_x < 0) pos_x = 0;
+        if (pos_x > (int)(view_width - 2)) pos_x = view_width - 2;
+        lv_obj_set_x(overview_position_line, pos_x);
     }
     
     // Draw waveform with ring buffer scroll optimization
@@ -591,6 +767,44 @@ void waveform_view_reset(void) {
     display_cache_valid = false;
     display_cache_center_index = 0;
     memset(display_cache, 0, sizeof(display_cache));
+    
+    // Reset overview waveform
+    memset(overview_waveform, 0, sizeof(overview_waveform));
+    overview_valid = false;
+    
+    // Clear overview canvas
+    if (overview_canvas) {
+        lv_canvas_fill_bg(overview_canvas, lv_color_black(), LV_OPA_COVER);
+        lv_obj_invalidate(overview_canvas);
+    }
+    
+    // Reset position indicator to start
+    if (overview_position_line) {
+        lv_obj_set_x(overview_position_line, 0);
+    }
+}
+
+void waveform_view_set_overview(const uint8_t *data, size_t size) {
+    if (!data || size == 0) {
+        overview_valid = false;
+        return;
+    }
+    
+    // Copy overview data (up to WAVEFORM_BARS points)
+    size_t copy_size = (size > WAVEFORM_BARS) ? WAVEFORM_BARS : size;
+    memcpy(overview_waveform, data, copy_size);
+    
+    // Zero-pad if needed
+    if (copy_size < WAVEFORM_BARS) {
+        memset(overview_waveform + copy_size, 0, WAVEFORM_BARS - copy_size);
+    }
+    
+    overview_valid = true;
+    
+    // Draw the overview waveform
+    draw_overview_waveform();
+    
+    ESP_LOGI(TAG, "Overview waveform set (%zu points)", copy_size);
 }
 
 void waveform_view_set_resolution(int divider) {
@@ -673,4 +887,39 @@ void waveform_view_reset_perf(void) {
     memset(perf_draw_times, 0, sizeof(perf_draw_times));
     memset(perf_invalidate_times, 0, sizeof(perf_invalidate_times));
 #endif
+}
+
+// ============================================================================
+// NUDGE ANIMATION API
+// ============================================================================
+
+void waveform_view_trigger_nudge(void) {
+    nudge_offset_px = NUDGE_AMOUNT_PX;
+    nudge_start_time = esp_timer_get_time();
+}
+
+/**
+ * @brief Calculate current nudge offset with ease-out decay
+ * 
+ * @return Current X offset in pixels (0 when animation complete)
+ */
+static int calculate_nudge_offset(void) {
+    if (nudge_offset_px == 0) return 0;
+    
+    int64_t now = esp_timer_get_time();
+    int64_t elapsed_us = now - nudge_start_time;
+    int elapsed_ms = (int)(elapsed_us / 1000);
+    
+    if (elapsed_ms >= NUDGE_DURATION_MS) {
+        // Animation complete
+        nudge_offset_px = 0;
+        return 0;
+    }
+    
+    // Ease-out: offset = NUDGE_AMOUNT_PX * (1 - decay)^2
+    float decay = (float)elapsed_ms / (float)NUDGE_DURATION_MS;
+    float remaining = 1.0f - decay;
+    int offset = (int)(NUDGE_AMOUNT_PX * remaining * remaining);
+    
+    return offset;
 }

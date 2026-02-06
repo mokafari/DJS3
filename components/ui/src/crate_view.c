@@ -315,6 +315,10 @@ void crate_view_refresh_tracks(void) {
     crate_view_set_tracks(track_names_array, track_count);
     ESP_LOGI(TAG, "Crate view updated with %lu tracks", track_count);
     
-    // Free the temporary array (crate_view now owns the strings)
+    // Free the temporary array and all strdup'd strings
+    // (crate_view_set_tracks makes its own copies)
+    for (uint32_t i = 0; i < track_count; i++) {
+        free((void*)track_names_array[i]);
+    }
     free(track_names_array);
 }

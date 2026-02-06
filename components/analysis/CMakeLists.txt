@@ -1,0 +1,11 @@
+idf_component_register(
+    SRCS
+        "src/bpm_detector.c"
+        "src/waveform_gen.c"
+        "src/key_detector.c"
+        "src/beat_grid.c"
+    INCLUDE_DIRS
+        "include"
+    REQUIRES
+        esp_common
+)

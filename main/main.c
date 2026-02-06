@@ -554,6 +554,7 @@ void app_main(void)
     uint32_t last_update = 0;
     uint32_t loop_count = 0;
     audio_player_state_t last_state = AUDIO_PLAYER_STATE_STOPPED;
+    bool overview_loaded = false;  // Track if overview waveform is loaded for current track
     
     while (1) {
         loop_count++;
@@ -564,6 +565,12 @@ void app_main(void)
             const char* state_names[] = {"STOPPED", "PLAYING", "PAUSED", "LOADING"};
             ESP_LOGI(TAG, "Audio player state changed: %s -> %s", 
                      state_names[last_state], state_names[current_state]);
+            
+            // Reset overview flag when track stops (new track will need new overview)
+            if (current_state == AUDIO_PLAYER_STATE_STOPPED) {
+                overview_loaded = false;
+            }
+            
             last_state = current_state;
         }
         
@@ -602,6 +609,16 @@ void app_main(void)
                 uint32_t dur = audio_player_get_duration();
                 float position = dur > 0 ? (float)pos / (float)dur : 0.0f;
                 float precise_time = audio_player_get_precise_position();
+                
+                // Load overview waveform once metadata is available
+                if (!overview_loaded && audio_player_has_metadata()) {
+                    static uint8_t overview_buf[480];
+                    if (audio_player_get_overview(overview_buf, 480)) {
+                        ui_manager_set_overview_waveform(overview_buf, 480);
+                        overview_loaded = true;
+                        ESP_LOGI(TAG, "Overview waveform loaded from metadata");
+                    }
+                }
                 
                 // Update waveform in UI with real data
                 static uint8_t waveform_data[480];
