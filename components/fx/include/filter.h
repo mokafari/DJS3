@@ -1,13 +1,11 @@
 /**
  * @file filter.h
- * @brief Resonant biquad filter with high-pass and low-pass modes
+ * @brief DJ-style filters: 3-band EQ/Isolator and Resonant HPF/LPF
  * 
- * Implements a DJ-style resonant filter with:
- * - Switchable low-pass / high-pass modes
- * - Cutoff frequency: 20Hz - 20kHz
- * - Resonance (Q factor): 0.5 - 20.0
- * - Direct Form II Transposed biquad for stability
- * - Optimized for ESP32 float operations
+ * Provides:
+ * - Classic DJ mixer-style 3-band EQ with soft limiting
+ * - Resonant high-pass and low-pass filters (20Hz-20kHz)
+ * - Biquad IIR filter design for CPU-efficient processing
  */
 
 #ifndef FILTER_H
@@ -22,143 +20,191 @@
 extern "C" {
 #endif
 
+/* ============================================================================
+ * Resonant Filter (HPF/LPF)
+ * ============================================================================ */
+
 /**
- * @brief Filter mode (low-pass or high-pass)
+ * @brief Filter type selection
  */
 typedef enum {
-    FILTER_MODE_LOWPASS = 0,    /**< Low-pass filter - cuts highs */
-    FILTER_MODE_HIGHPASS = 1    /**< High-pass filter - cuts lows */
-} filter_mode_t;
+    FILTER_TYPE_LOWPASS = 0,    /**< Resonant low-pass filter */
+    FILTER_TYPE_HIGHPASS        /**< Resonant high-pass filter */
+} filter_type_t;
 
 /**
- * @brief Biquad filter state for one channel
+ * @brief Resonant filter state
  * 
- * Uses Direct Form II Transposed for numerical stability:
- *   y[n] = b0*x[n] + z1
- *   z1   = b1*x[n] - a1*y[n] + z2
- *   z2   = b2*x[n] - a2*y[n]
+ * Biquad IIR filter with transposed direct form II implementation.
+ * Supports stereo processing with independent state per channel.
  */
 typedef struct {
-    float z1;   /**< Delay element 1 */
-    float z2;   /**< Delay element 2 */
-} biquad_state_t;
-
-/**
- * @brief Resonant filter instance
- */
-typedef struct {
-    // Biquad coefficients (normalized: a0 = 1.0)
+    // Biquad coefficients (normalized)
     float b0, b1, b2;   /**< Feedforward coefficients */
-    float a1, a2;       /**< Feedback coefficients (negated for efficiency) */
+    float a1, a2;       /**< Feedback coefficients (a0 normalized to 1.0) */
     
-    // Per-channel state
-    biquad_state_t state_l; /**< Left channel state */
-    biquad_state_t state_r; /**< Right channel state */
+    // Filter state (transposed direct form II)
+    float w1_l, w2_l;   /**< Left channel delay elements */
+    float w1_r, w2_r;   /**< Right channel delay elements */
     
     // Parameters
-    float cutoff_hz;        /**< Cutoff frequency in Hz */
-    float resonance;        /**< Resonance / Q factor */
-    filter_mode_t mode;     /**< Filter mode (LP/HP) */
-    uint32_t sample_rate;   /**< Sample rate in Hz */
-    
-    bool enabled;           /**< Enable/bypass flag */
-    bool coeffs_dirty;      /**< Coefficients need recalculation */
+    filter_type_t type;     /**< Filter type (LPF/HPF) */
+    float cutoff_hz;        /**< Cutoff frequency in Hz (20-20000) */
+    float resonance;        /**< Resonance/Q factor (0.5-20.0) */
+    uint32_t sample_rate;   /**< Audio sample rate */
+    bool enabled;           /**< Processing enabled flag */
 } resonant_filter_t;
 
 /**
  * @brief Initialize resonant filter
  * 
- * Sets up filter with default parameters:
- * - Mode: Low-pass
- * - Cutoff: 1000 Hz
- * - Resonance: 0.707 (Butterworth)
- * 
- * @param filter Pointer to filter instance
+ * @param filter Pointer to filter state structure
  * @param sample_rate Audio sample rate (e.g., 44100)
+ * @param type Filter type (FILTER_TYPE_LOWPASS or FILTER_TYPE_HIGHPASS)
  */
-void filter_init(resonant_filter_t *filter, uint32_t sample_rate);
+void resonant_filter_init(resonant_filter_t *filter, uint32_t sample_rate, filter_type_t type);
 
 /**
  * @brief Set filter cutoff frequency
  * 
- * @param filter Pointer to filter instance
- * @param cutoff_hz Cutoff frequency (20.0 - 20000.0 Hz)
+ * @param filter Pointer to filter state
+ * @param cutoff_hz Cutoff frequency in Hz (clamped to 20-20000)
  */
-void filter_set_cutoff(resonant_filter_t *filter, float cutoff_hz);
+void resonant_filter_set_cutoff(resonant_filter_t *filter, float cutoff_hz);
 
 /**
  * @brief Set filter resonance (Q factor)
  * 
- * Higher values create a resonant peak at the cutoff frequency.
- * Values above ~10 can cause self-oscillation.
+ * Higher values create a peak at the cutoff frequency.
+ * Values around 0.707 give Butterworth response (no peak).
+ * Values above 10 create strong resonance/self-oscillation character.
  * 
- * @param filter Pointer to filter instance
- * @param resonance Q factor (0.5 - 20.0, 0.707 = Butterworth)
+ * @param filter Pointer to filter state
+ * @param resonance Q factor (clamped to 0.5-20.0)
  */
-void filter_set_resonance(resonant_filter_t *filter, float resonance);
+void resonant_filter_set_resonance(resonant_filter_t *filter, float resonance);
 
 /**
- * @brief Set filter mode (low-pass or high-pass)
+ * @brief Set filter type (LPF/HPF)
  * 
- * @param filter Pointer to filter instance
- * @param mode FILTER_MODE_LOWPASS or FILTER_MODE_HIGHPASS
+ * @param filter Pointer to filter state
+ * @param type Filter type
  */
-void filter_set_mode(resonant_filter_t *filter, filter_mode_t mode);
+void resonant_filter_set_type(resonant_filter_t *filter, filter_type_t type);
 
 /**
  * @brief Enable or disable filter processing
  * 
- * @param filter Pointer to filter instance
+ * @param filter Pointer to filter state
  * @param enabled True to enable, false to bypass
  */
-void filter_set_enabled(resonant_filter_t *filter, bool enabled);
+void resonant_filter_set_enabled(resonant_filter_t *filter, bool enabled);
 
 /**
- * @brief Process stereo audio through filter (in-place)
+ * @brief Process audio through resonant filter (IRAM optimized)
  * 
- * Processes stereo interleaved 16-bit PCM audio.
- * Uses IRAM for hot loop optimization on ESP32.
+ * Applies biquad IIR filter to stereo audio in-place.
+ * Uses transposed direct form II for numerical stability.
  * 
- * @param filter Pointer to filter instance
+ * @param filter Pointer to filter state
  * @param buffer Stereo interleaved int16 buffer (modified in-place)
- * @param num_frames Number of stereo frames to process
+ * @param samples Number of stereo frames to process
  * 
  * @note Thread Safety: Not thread-safe. Call from single audio task only.
  */
-void filter_process(resonant_filter_t *filter, int16_t *buffer, size_t num_frames);
+void resonant_filter_process(resonant_filter_t *filter, int16_t *buffer, size_t samples);
 
 /**
  * @brief Reset filter state (clears delay lines)
  * 
- * Call when switching tracks or seeking to prevent transients.
+ * Call when switching tracks or seeking to prevent filter transients.
  * 
- * @param filter Pointer to filter instance
+ * @param filter Pointer to filter state
  */
-void filter_reset(resonant_filter_t *filter);
+void resonant_filter_reset(resonant_filter_t *filter);
+
+/* ============================================================================
+ * DJ EQ (3-Band Isolator)
+ * ============================================================================ */
 
 /**
- * @brief Get current cutoff frequency
+ * @brief DJ EQ state (3-band isolator)
  * 
- * @param filter Pointer to filter instance
- * @return Current cutoff in Hz
+ * Contains biquad filter coefficients and delay lines for stereo processing.
+ * Gains map from -1.0 (kill/mute) to 1.0 (boost).
  */
-float filter_get_cutoff(const resonant_filter_t *filter);
+typedef struct {
+    // Biquad coefficients [b0, b1, b2, a1, a2]
+    float coeffs_low[5];
+    float coeffs_mid[5];
+    float coeffs_high[5];
+    
+    // Delay lines for L/R channels (2 samples each for biquad)
+    float w_low_l[2], w_low_r[2];
+    float w_mid_l[2], w_mid_r[2];
+    float w_high_l[2], w_high_r[2];
+    
+    // Gain controls: -1.0 (kill) to 1.0 (boost)
+    // -1.0 = mute, 0.0 = unity, 1.0 = +6dB boost
+    float gain_low;
+    float gain_mid;
+    float gain_high;
+    
+    uint32_t sample_rate;
+    bool enabled;
+} dj_eq_t;
 
 /**
- * @brief Get current resonance
+ * @brief Initialize DJ EQ with default settings
  * 
- * @param filter Pointer to filter instance
- * @return Current Q factor
+ * @param eq Pointer to EQ state structure
+ * @param sample_rate Audio sample rate (e.g., 44100)
  */
-float filter_get_resonance(const resonant_filter_t *filter);
+void dj_eq_init(dj_eq_t *eq, uint32_t sample_rate);
 
 /**
- * @brief Get current filter mode
+ * @brief Set EQ band gains
  * 
- * @param filter Pointer to filter instance
- * @return Current mode (LP/HP)
+ * @param eq Pointer to EQ state
+ * @param low  Low band gain (-1.0 to 1.0)
+ * @param mid  Mid band gain (-1.0 to 1.0)
+ * @param high High band gain (-1.0 to 1.0)
+ * 
+ * Example:
+ *     dj_eq_set_gains(&eq, -1.0f, 1.0f, 0.0f);  // Kill bass, boost mids
  */
-filter_mode_t filter_get_mode(const resonant_filter_t *filter);
+void dj_eq_set_gains(dj_eq_t *eq, float low, float mid, float high);
+
+/**
+ * @brief Enable or disable EQ processing
+ * 
+ * @param eq Pointer to EQ state
+ * @param enabled True to enable, false to bypass
+ */
+void dj_eq_set_enabled(dj_eq_t *eq, bool enabled);
+
+/**
+ * @brief Process audio through EQ and soft limiter (IRAM optimized)
+ * 
+ * Applies 3-band EQ and polynomial soft limiter to stereo audio.
+ * Uses static scratch buffer to avoid stack allocation.
+ * 
+ * @param eq      Pointer to EQ state
+ * @param buffer  Stereo interleaved int16 buffer (modified in-place)
+ * @param samples Number of stereo frames to process
+ * 
+ * @note Thread Safety: Not thread-safe. Call from single audio task only.
+ */
+void dj_eq_process(dj_eq_t *eq, int16_t *buffer, size_t samples);
+
+/**
+ * @brief Reset EQ filter state (clears delay lines)
+ * 
+ * Call when switching tracks or seeking to prevent filter transients.
+ * 
+ * @param eq Pointer to EQ state
+ */
+void dj_eq_reset(dj_eq_t *eq);
 
 #ifdef __cplusplus
 }
