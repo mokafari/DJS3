@@ -17,6 +17,7 @@ idf_component_register(
         "id3_parser.c" 
         "hw_test_harness.c" 
         "dsp_engine.c"
+        "dsp_pipeline.c"
         # OpenDeck Metadata System
         "metadata.c"
         "analyzer.c"
@@ -24,9 +25,20 @@ idf_component_register(
         "playlist_manager.c"
         "analysis_task.c"
         "track_history.c"
+        "track_prep.c"
         "preferences.c"
         # Slip Mode System
         "slip_mode.c"
+        # Jog Wheel Controller
+        "jog_wheel.c"
+        # Master Output Recorder
+        "recorder.c"
+        # LED Controller
+        "led_controller.c"
+        # External Controller System
+        "ext_controller.c"
+        # Auto-DJ System
+        "auto_dj.c"
     INCLUDE_DIRS "include"
     REQUIRES driver nvs_flash esp_psram libhelix-mp3 fatfs usb ui timestretch esp_timer esp-dsp fx sync analysis playlist esp_adc
 )

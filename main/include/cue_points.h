@@ -138,6 +138,74 @@ void cue_points_clear_all(void);
  */
 bool cue_points_save(void);
 
+/**
+ * @brief Get default color for a cue index
+ * 
+ * @param cue_index Cue index (0-7)
+ * @return RGB565 color value
+ */
+uint16_t cue_points_get_default_color(uint8_t cue_index);
+
+/**
+ * @brief Set global trigger mode for hot cues
+ * 
+ * @param mode Trigger mode (JUMP, PLAY, or PREVIEW)
+ */
+void cue_points_set_trigger_mode(cue_trigger_mode_t mode);
+
+/**
+ * @brief Get current trigger mode
+ * 
+ * @return Current trigger mode
+ */
+cue_trigger_mode_t cue_points_get_trigger_mode(void);
+
+/**
+ * @brief Trigger a hot cue (called when button pressed)
+ * 
+ * Behavior depends on trigger mode:
+ * - JUMP: Seeks to cue position
+ * - PLAY: Seeks and starts playback
+ * - PREVIEW: Seeks and plays while button held
+ * 
+ * If cue is not set, sets it at current position.
+ * 
+ * @param cue_index Cue index (0-7)
+ * @param current_position_ms Current playback position in ms
+ * @return Position to seek to (ms), or 0 if cue was set
+ */
+uint32_t cue_points_trigger(uint8_t cue_index, uint32_t current_position_ms);
+
+/**
+ * @brief Release a hot cue (called when button released, for PREVIEW mode)
+ * 
+ * @param cue_index Cue index that was released
+ */
+void cue_points_release(uint8_t cue_index);
+
+/**
+ * @brief Delete a cue point (same as clear but with logging)
+ * 
+ * @param cue_index Cue index (0-7)
+ * @return true if cue was deleted, false if it wasn't set
+ */
+bool cue_points_delete(uint8_t cue_index);
+
+/**
+ * @brief Cycle cue color to next preset
+ * 
+ * @param cue_index Cue index (0-7)
+ * @return New color value
+ */
+uint16_t cue_points_cycle_color(uint8_t cue_index);
+
+/**
+ * @brief Get number of active cue points
+ * 
+ * @return Count of set cue points (0-8)
+ */
+uint8_t cue_points_get_active_count(void);
+
 #ifdef __cplusplus
 }
 #endif

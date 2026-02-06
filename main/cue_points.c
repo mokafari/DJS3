@@ -250,3 +250,158 @@ bool cue_points_save(void) {
         return false;
     }
 }
+
+// ============================================================================
+// Extended API Implementation
+// ============================================================================
+
+// Global trigger mode
+static cue_trigger_mode_t s_trigger_mode = CUE_MODE_PLAY;
+
+// Preview state for PREVIEW mode
+static uint32_t s_preview_return_position = 0;
+static bool s_preview_active = false;
+
+/**
+ * @brief Get default color for a cue index
+ */
+uint16_t cue_points_get_default_color(uint8_t cue_index) {
+    if (cue_index >= MAX_CUE_POINTS) {
+        return CUE_COLOR_WHITE;
+    }
+    return default_colors[cue_index];
+}
+
+/**
+ * @brief Set global trigger mode for hot cues
+ */
+void cue_points_set_trigger_mode(cue_trigger_mode_t mode) {
+    s_trigger_mode = mode;
+    ESP_LOGI(TAG, "Trigger mode set to %d (%s)", mode,
+             mode == CUE_MODE_JUMP ? "JUMP" :
+             mode == CUE_MODE_PLAY ? "PLAY" : "PREVIEW");
+}
+
+/**
+ * @brief Get current trigger mode
+ */
+cue_trigger_mode_t cue_points_get_trigger_mode(void) {
+    return s_trigger_mode;
+}
+
+/**
+ * @brief Trigger a hot cue
+ */
+uint32_t cue_points_trigger(uint8_t cue_index, uint32_t current_position_ms) {
+    if (cue_index >= MAX_CUE_POINTS) {
+        ESP_LOGE(TAG, "Invalid cue index: %d", cue_index);
+        return 0;
+    }
+    
+    // If cue is not set, set it at current position
+    if (!cue_points[cue_index].active) {
+        cue_points_set_ms(cue_index, current_position_ms);
+        ESP_LOGI(TAG, "Hot cue %d set at %u ms", cue_index + 1, current_position_ms);
+        return 0;  // Return 0 to indicate cue was set, not triggered
+    }
+    
+    uint32_t cue_position = cue_points[cue_index].position_ms;
+    
+    // Handle preview mode - save return position
+    if (s_trigger_mode == CUE_MODE_PREVIEW) {
+        s_preview_return_position = current_position_ms;
+        s_preview_active = true;
+    }
+    
+    ESP_LOGI(TAG, "Hot cue %d triggered at %u ms (mode: %s)", 
+             cue_index + 1, cue_position,
+             s_trigger_mode == CUE_MODE_JUMP ? "JUMP" :
+             s_trigger_mode == CUE_MODE_PLAY ? "PLAY" : "PREVIEW");
+    
+    return cue_position;
+}
+
+/**
+ * @brief Release a hot cue (for PREVIEW mode)
+ */
+void cue_points_release(uint8_t cue_index) {
+    if (s_trigger_mode == CUE_MODE_PREVIEW && s_preview_active) {
+        ESP_LOGI(TAG, "Hot cue %d released, returning to %u ms", 
+                 cue_index + 1, s_preview_return_position);
+        s_preview_active = false;
+        // Note: The actual seek back is handled by the caller
+    }
+}
+
+/**
+ * @brief Delete a cue point
+ */
+bool cue_points_delete(uint8_t cue_index) {
+    if (cue_index >= MAX_CUE_POINTS) {
+        ESP_LOGE(TAG, "Invalid cue index for delete: %d", cue_index);
+        return false;
+    }
+    
+    if (!cue_points[cue_index].active) {
+        ESP_LOGW(TAG, "Hot cue %d not set, nothing to delete", cue_index + 1);
+        return false;
+    }
+    
+    ESP_LOGI(TAG, "Deleting hot cue %d (was at %u ms)", 
+             cue_index + 1, cue_points[cue_index].position_ms);
+    
+    cue_points_clear(cue_index);
+    return true;
+}
+
+/**
+ * @brief Cycle cue color to next preset
+ */
+uint16_t cue_points_cycle_color(uint8_t cue_index) {
+    if (cue_index >= MAX_CUE_POINTS) {
+        return CUE_COLOR_WHITE;
+    }
+    
+    // Color cycle order
+    static const uint16_t color_cycle[] = {
+        CUE_COLOR_RED,
+        CUE_COLOR_ORANGE,
+        CUE_COLOR_YELLOW,
+        CUE_COLOR_GREEN,
+        CUE_COLOR_CYAN,
+        CUE_COLOR_BLUE,
+        CUE_COLOR_PURPLE,
+        CUE_COLOR_WHITE
+    };
+    static const int num_colors = sizeof(color_cycle) / sizeof(color_cycle[0]);
+    
+    uint16_t current = cue_points[cue_index].color_rgb565;
+    int next_idx = 0;
+    
+    // Find current color in cycle and advance to next
+    for (int i = 0; i < num_colors; i++) {
+        if (color_cycle[i] == current) {
+            next_idx = (i + 1) % num_colors;
+            break;
+        }
+    }
+    
+    uint16_t new_color = color_cycle[next_idx];
+    cue_points_set_color(cue_index, new_color);
+    
+    ESP_LOGI(TAG, "Hot cue %d color changed to 0x%04X", cue_index + 1, new_color);
+    return new_color;
+}
+
+/**
+ * @brief Get number of active cue points
+ */
+uint8_t cue_points_get_active_count(void) {
+    uint8_t count = 0;
+    for (int i = 0; i < MAX_CUE_POINTS; i++) {
+        if (cue_points[i].active) {
+            count++;
+        }
+    }
+    return count;
+}

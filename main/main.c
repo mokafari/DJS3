@@ -226,14 +226,110 @@ static void test_gpio(void)
     ESP_LOGI(TAG, "GPIO test completed");
 }
 
+// ============================================================================
+// Hot Cue Long-Press Detection
+// ============================================================================
+
+#define HOT_CUE_LONG_PRESS_MS  500  // Hold for 500ms to delete
+
+static uint32_t hot_cue_press_time[8] = {0};
+static bool hot_cue_triggered[8] = {false};
+
+/**
+ * @brief Check if button is a hot cue button
+ */
+static inline bool is_hot_cue_button(button_id_t button) {
+    return button >= BUTTON_HOT_CUE_1 && button <= BUTTON_HOT_CUE_8;
+}
+
+/**
+ * @brief Get hot cue index from button
+ */
+static inline int get_hot_cue_index(button_id_t button) {
+    return button - BUTTON_HOT_CUE_1;
+}
+
+/**
+ * @brief Handle hot cue button press
+ */
+static void handle_hot_cue_press(int cue_index) {
+    uint32_t now = xTaskGetTickCount() * portTICK_PERIOD_MS;
+    hot_cue_press_time[cue_index] = now;
+    hot_cue_triggered[cue_index] = false;
+    
+    // Get current position in milliseconds
+    uint32_t current_pos_ms = audio_player_get_position_ms();
+    
+    // Trigger the hot cue
+    uint32_t cue_pos_ms = cue_points_trigger(cue_index, current_pos_ms);
+    
+    if (cue_pos_ms > 0) {
+        // Cue exists - seek to it
+        // Convert ms to seconds for audio_player_seek (legacy API)
+        audio_player_seek(cue_pos_ms / 1000);
+        
+        // Start playback if in PLAY mode
+        cue_trigger_mode_t mode = cue_points_get_trigger_mode();
+        if (mode == CUE_MODE_PLAY || mode == CUE_MODE_PREVIEW) {
+            if (audio_player_get_state() != AUDIO_PLAYER_STATE_PLAYING) {
+                audio_player_play();
+            }
+        }
+        
+        hot_cue_triggered[cue_index] = true;
+        ESP_LOGI(TAG, "Hot Cue %d triggered -> %u ms", cue_index + 1, cue_pos_ms);
+    } else {
+        // Cue was set at current position
+        ESP_LOGI(TAG, "Hot Cue %d set at %u ms", cue_index + 1, current_pos_ms);
+    }
+}
+
+/**
+ * @brief Handle hot cue button release
+ */
+static void handle_hot_cue_release(int cue_index) {
+    uint32_t now = xTaskGetTickCount() * portTICK_PERIOD_MS;
+    uint32_t press_duration = now - hot_cue_press_time[cue_index];
+    
+    // Check for long press -> delete
+    if (press_duration >= HOT_CUE_LONG_PRESS_MS && hot_cue_triggered[cue_index]) {
+        if (cue_points_delete(cue_index)) {
+            ESP_LOGI(TAG, "Hot Cue %d DELETED (long press %u ms)", 
+                     cue_index + 1, press_duration);
+        }
+    }
+    
+    // Handle preview mode release
+    cue_points_release(cue_index);
+    
+    // If in preview mode and was triggered, pause on release
+    if (cue_points_get_trigger_mode() == CUE_MODE_PREVIEW && hot_cue_triggered[cue_index]) {
+        audio_player_pause();
+    }
+    
+    hot_cue_triggered[cue_index] = false;
+}
+
 /**
  * @brief Button event callback
  */
 static void button_event_handler(button_id_t button, bool pressed, void *arg) {
     (void)arg;
     
+    // Handle hot cue buttons specially (need both press and release)
+    if (is_hot_cue_button(button)) {
+        int cue_index = get_hot_cue_index(button);
+        if (pressed) {
+            handle_hot_cue_press(cue_index);
+        } else {
+            handle_hot_cue_release(cue_index);
+        }
+        return;
+    }
+    
+    // Other buttons: only handle press events
     if (!pressed) {
-        return; // Only handle press events
+        return;
     }
     
     switch (button) {
@@ -260,20 +356,6 @@ static void button_event_handler(button_id_t button, bool pressed, void *arg) {
         case BUTTON_LOOP_OUT:
             ESP_LOGI(TAG, "Loop Out button pressed");
             loop_control_set_out(audio_player_get_position());
-            break;
-        case BUTTON_HOT_CUE_1:
-        case BUTTON_HOT_CUE_2:
-        case BUTTON_HOT_CUE_3:
-        case BUTTON_HOT_CUE_4:
-            ESP_LOGI(TAG, "Hot Cue %d pressed", button - BUTTON_HOT_CUE_1 + 1);
-            {
-                uint32_t cue_pos = cue_points_get(button - BUTTON_HOT_CUE_1);
-                if (cue_pos > 0) {
-                    audio_player_seek(cue_pos);
-                } else {
-                    cue_points_set(button - BUTTON_HOT_CUE_1, audio_player_get_position());
-                }
-            }
             break;
         default:
             break;

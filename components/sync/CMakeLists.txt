@@ -1,6 +1,8 @@
 idf_component_register(
     SRCS 
         "src/midi_sync.c"
+        "src/midi_in.c"
+        "src/midi_out.c"
         "src/analog_sync.c"
         "src/ableton_link.c"
     INCLUDE_DIRS 
@@ -9,5 +11,7 @@ idf_component_register(
         driver
         esp_timer
         freertos
+        esp_wifi
+        esp_netif
+        lwip
 )
-
